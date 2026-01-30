@@ -1,49 +1,35 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using System;
 using System.IO;
 using System.Threading.Tasks;
 
 namespace Ocr.Api.Services.FileStorage
 {
-    // Single interface for temp file handling
-    public interface ITempFileService
-    {
-        /// <summary>
-        /// Saves the uploaded file to a temporary folder and returns the full file path.
-        /// </summary>
-        /// <param name="file">Uploaded file from client</param>
-        /// <returns>Full path to saved temp file</returns>
-        Task<string> SaveFileAsync(IFormFile file);
-    }
-
-    // Concrete implementation
     public class TempFileService : ITempFileService
     {
         private readonly string _tempRoot;
 
         public TempFileService(IConfiguration config)
         {
-            // Read folder from config or use system temp path
-            _tempRoot = config.GetValue<string>("OcrSettings:TempRoot") ?? Path.GetTempPath();
+            _tempRoot = config.GetValue<string>("OcrSettings:TempRoot")
+                        ?? Path.Combine(Path.GetTempPath(), "ocr-api");
+
+            Directory.CreateDirectory(_tempRoot);
         }
 
         public async Task<string> SaveFileAsync(IFormFile file)
         {
             if (file == null || file.Length == 0)
-                throw new ArgumentException("File is null or empty", nameof(file));
+                throw new ArgumentException("Invalid file");
 
-            // Ensure temp folder exists
-            Directory.CreateDirectory(_tempRoot);
+            var filePath = Path.Combine(
+                _tempRoot,
+                $"{Guid.NewGuid()}{Path.GetExtension(file.FileName)}"
+            );
 
-            // Generate unique file name
-            var fileName = Path.GetRandomFileName() + Path.GetExtension(file.FileName);
-            var filePath = Path.Combine(_tempRoot, fileName);
-
-            // Write file to disk safely
-            using (var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None))
-            {
-                await file.CopyToAsync(stream);
-            }
+            using var fs = new FileStream(filePath, FileMode.Create);
+            await file.CopyToAsync(fs);
 
             return filePath;
         }
