@@ -1,4 +1,6 @@
-﻿namespace Ocr.Api.Services.FileStorage
+﻿
+
+namespace Ocr.Api.Services.FileStorage
 {
     public class TempFileService : ITempFileService
     {
@@ -6,26 +8,24 @@
 
         public TempFileService(IConfiguration config)
         {
-            _tempRoot = config.GetValue<string>("OcrSettings:TempRoot")
-                ?? Path.GetTempPath();
+            _tempRoot = config.GetValue<string>("OcrSettings:TempRoot") ?? Path.GetTempPath();
         }
 
         public async Task<string> SaveFileAsync(IFormFile file)
         {
             var fileName = Path.GetRandomFileName() + Path.GetExtension(file.FileName);
-            var tempRoot = _tempRoot ?? Path.GetTempPath(); // make sure _tempRoot is valid
-            Directory.CreateDirectory(tempRoot); // ensure folder exists
+            var tempRoot = _tempRoot ?? Path.GetTempPath();
+            Directory.CreateDirectory(tempRoot);
 
             var filePath = Path.Combine(tempRoot, fileName);
 
-            using (var stream = new FileStream(filePath, FileMode.Create))
+            using (var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                await file.CopyToAsync(stream); // write file
+                await file.CopyToAsync(stream);
             }
 
-            return filePath; // this must not be null
+            return filePath;
         }
-
     }
 
 }
