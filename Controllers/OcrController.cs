@@ -25,18 +25,9 @@ namespace Ocr.Api.Controllers
                 }
 
         [HttpPost("pdf/searchable")]
-        [RequestSizeLimit(104_857_600)] // 100 MB
+        [RequestSizeLimit(104_857_600)]
         public async Task<IActionResult> MakePdfSearchable([FromForm] OcrPdfRequest request)
         {
-            var analysis = _pdfAnalysisService.Analyze(tempFilePath);
-
-            if (analysis.IsSearchable && !request.ForceOcr)
-            {
-                // Skip OCR and return original PDF
-                var bytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
-                return File(bytes, "application/pdf", request.File.FileName);
-            }
-
             if (request.File == null || request.File.Length == 0)
             {
                 return BadRequest(new OcrErrorResponse
@@ -46,7 +37,6 @@ namespace Ocr.Api.Controllers
                 });
             }
 
-            // Validate file extension
             var ext = Path.GetExtension(request.File.FileName).ToLowerInvariant();
             if (ext != ".pdf")
             {
@@ -58,6 +48,7 @@ namespace Ocr.Api.Controllers
             }
 
             string tempFilePath = null;
+
             try
             {
                 tempFilePath = await _tempFileService.SaveFileAsync(request.File);
@@ -71,12 +62,23 @@ namespace Ocr.Api.Controllers
                     });
                 }
 
-                // Safe now to pass to PdfAnalysisService
                 var analysis = _pdfAnalysisService.Analyze(tempFilePath);
+
+                if (analysis.IsSearchable && !request.ForceOcr)
+                {
+                    var bytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
+                    return File(bytes, "application/pdf", request.File.FileName);
+                }
+
+                // TODO: Pass tempFilePath to OCR pipeline for image-only pages
+
+                // For now, just return the original PDF
+                var fileBytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
+                return File(fileBytes, "application/pdf", request.File.FileName);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error saving PDF");
+                _logger.LogError(ex, "Error processing PDF");
                 return StatusCode(500, new OcrErrorResponse
                 {
                     Error = "INTERNAL_ERROR",
@@ -85,7 +87,6 @@ namespace Ocr.Api.Controllers
             }
             finally
             {
-                // Clean up temp file
                 if (tempFilePath != null && System.IO.File.Exists(tempFilePath))
                 {
                     try { System.IO.File.Delete(tempFilePath); } catch { /* ignore */ }
