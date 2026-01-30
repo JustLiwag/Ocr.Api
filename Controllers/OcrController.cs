@@ -1,76 +1,54 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Ocr.Api.Contracts.Requests;
-using Ocr.Api.Contracts.Responses;
+﻿using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Ocr.Api.Services.FileStorage;
+using Ocr.Api.Services.Pdf;
+using Ocr.Api.Services.Rendering;
+using Ocr.Api.Services.Ocr;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace Ocr.Api.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/ocr")]
     public class OcrController : ControllerBase
     {
         private readonly ITempFileService _tempFileService;
-        private readonly ILogger<OcrController> _logger;
+        private readonly IPdfTextDetector _pdfTextDetector;
+        private readonly IPdfRenderService _renderService;
+        private readonly ITesseractService _tesseractService;
 
-        public OcrController(ITempFileService tempFileService, ILogger<OcrController> logger)
+        public OcrController(
+            ITempFileService tempFileService,
+            IPdfTextDetector pdfTextDetector,
+            IPdfRenderService renderService,
+            ITesseractService tesseractService)
         {
             _tempFileService = tempFileService;
-            _logger = logger;
+            _pdfTextDetector = pdfTextDetector;
+            _renderService = renderService;
+            _tesseractService = tesseractService;
         }
 
-        [HttpPost("pdf/searchable")]
-        [RequestSizeLimit(104_857_600)] // 100 MB
-        public async Task<IActionResult> MakePdfSearchable([FromForm] OcrPdfRequest request)
+        [HttpPost("manual")]
+        public async Task<IActionResult> RunManualOcr(IFormFile file)
         {
-            if (request.File == null || request.File.Length == 0)
-            {
-                return BadRequest(new OcrErrorResponse
-                {
-                    Error = "NO_FILE",
-                    Message = "No PDF file uploaded."
-                });
-            }
+            var pdfPath = await _tempFileService.SaveFileAsync(file);
 
-            // Validate file extension
-            var ext = Path.GetExtension(request.File.FileName).ToLowerInvariant();
-            if (ext != ".pdf")
-            {
-                return StatusCode(415, new OcrErrorResponse
-                {
-                    Error = "UNSUPPORTED_FORMAT",
-                    Message = "Only PDF files are supported."
-                });
-            }
+            if (_pdfTextDetector.HasText(pdfPath))
+                return Ok("PDF already searchable.");
 
-            string tempFilePath = null;
+            var images = await _renderService.RenderAsync(pdfPath);
+            var ocrResults = new List<string>();
 
-            try
-            {
-                // Save file to temp folder
-                tempFilePath = await _tempFileService.SaveFileAsync(request.File);
+            foreach (var image in images)
+                ocrResults.Add(await _tesseractService.RunOcrAsync(image));
 
-                // For Phase 1: just return the same PDF
-                var fileBytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
-
-                return File(fileBytes, "application/pdf", request.File.FileName);
-            }
-            catch (Exception ex)
+            return Ok(new
             {
-                _logger.LogError(ex, "Error saving PDF");
-                return StatusCode(500, new OcrErrorResponse
-                {
-                    Error = "INTERNAL_ERROR",
-                    Message = "An unexpected error occurred while processing the PDF."
-                });
-            }
-            finally
-            {
-                // Clean up temp file
-                if (tempFilePath != null && System.IO.File.Exists(tempFilePath))
-                {
-                    try { System.IO.File.Delete(tempFilePath); } catch { /* ignore */ }
-                }
-            }
+                Pages = ocrResults.Count,
+                OutputFiles = ocrResults
+            });
         }
     }
 }

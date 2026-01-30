@@ -1,27 +1,34 @@
 using Ocr.Api.Services.FileStorage;
+using Ocr.Api.Services.Ocr;
+using Ocr.Api.Services.Pdf;
+using Ocr.Api.Services.Rendering;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+// Controllers
 builder.Services.AddControllers();
 
-// Register TempFileService
-builder.Services.AddScoped<ITempFileService, TempFileService>();
-
-// Swagger for testing
+// Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// Dependency Injection
+builder.Services.AddScoped<ITempFileService, TempFileService>();
+builder.Services.AddScoped<IPdfTextDetector, PdfPigTextDetector>();
+builder.Services.AddScoped<IPdfRenderService, GhostscriptRenderService>();
+builder.Services.AddScoped<ITesseractService, TesseractService>();
 
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "OCR API v1");
+    });
 }
 
-app.UseHttpsRedirection();
 app.UseAuthorization();
 app.MapControllers();
-
 app.Run();
