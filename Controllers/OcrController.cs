@@ -2,6 +2,7 @@
 using Ocr.Api.Contracts.Requests;
 using Ocr.Api.Contracts.Responses;
 using Ocr.Api.Services.FileStorage;
+using Ocr.Api.Services.Pdf;
 
 namespace Ocr.Api.Controllers
 {
@@ -11,17 +12,31 @@ namespace Ocr.Api.Controllers
     {
         private readonly ITempFileService _tempFileService;
         private readonly ILogger<OcrController> _logger;
+        private readonly IPdfAnalysisService _pdfAnalysisService;
 
-        public OcrController(ITempFileService tempFileService, ILogger<OcrController> logger)
-        {
-            _tempFileService = tempFileService;
-            _logger = logger;
-        }
+        public OcrController(
+            ITempFileService tempFileService,
+            IPdfAnalysisService pdfAnalysisService,
+            ILogger<OcrController> logger)
+                {
+                    _tempFileService = tempFileService;
+                    _pdfAnalysisService = pdfAnalysisService;
+                    _logger = logger;
+                }
 
         [HttpPost("pdf/searchable")]
         [RequestSizeLimit(104_857_600)] // 100 MB
         public async Task<IActionResult> MakePdfSearchable([FromForm] OcrPdfRequest request)
         {
+            var analysis = _pdfAnalysisService.Analyze(tempFilePath);
+
+            if (analysis.IsSearchable && !request.ForceOcr)
+            {
+                // Skip OCR and return original PDF
+                var bytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
+                return File(bytes, "application/pdf", request.File.FileName);
+            }
+
             if (request.File == null || request.File.Length == 0)
             {
                 return BadRequest(new OcrErrorResponse
@@ -43,16 +58,21 @@ namespace Ocr.Api.Controllers
             }
 
             string tempFilePath = null;
-
             try
             {
-                // Save file to temp folder
                 tempFilePath = await _tempFileService.SaveFileAsync(request.File);
 
-                // For Phase 1: just return the same PDF
-                var fileBytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
+                if (string.IsNullOrWhiteSpace(tempFilePath) || !System.IO.File.Exists(tempFilePath))
+                {
+                    return StatusCode(500, new OcrErrorResponse
+                    {
+                        Error = "TEMP_FILE_ERROR",
+                        Message = "Failed to save uploaded PDF to temp folder."
+                    });
+                }
 
-                return File(fileBytes, "application/pdf", request.File.FileName);
+                // Safe now to pass to PdfAnalysisService
+                var analysis = _pdfAnalysisService.Analyze(tempFilePath);
             }
             catch (Exception ex)
             {

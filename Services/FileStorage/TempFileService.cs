@@ -13,15 +13,19 @@
         public async Task<string> SaveFileAsync(IFormFile file)
         {
             var fileName = Path.GetRandomFileName() + Path.GetExtension(file.FileName);
-            var filePath = Path.Combine(_tempRoot, fileName);
+            var tempRoot = _tempRoot ?? Path.GetTempPath(); // make sure _tempRoot is valid
+            Directory.CreateDirectory(tempRoot); // ensure folder exists
 
-            Directory.CreateDirectory(_tempRoot);
+            var filePath = Path.Combine(tempRoot, fileName);
 
-            using var stream = new FileStream(filePath, FileMode.Create);
-            await file.CopyToAsync(stream);
+            using (var stream = new FileStream(filePath, FileMode.Create))
+            {
+                await file.CopyToAsync(stream); // write file
+            }
 
-            return filePath;
+            return filePath; // this must not be null
         }
+
     }
 
 }
