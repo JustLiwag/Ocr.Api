@@ -22,12 +22,10 @@ namespace Ocr.Api.Services.Pdf
             {
                 var page = pdf.GetPage(i + 1);
                 var text = page.Text;
-                var hasText = !string.IsNullOrWhiteSpace(text);
-
                 result.Pages.Add(new PdfPageAnalysis
                 {
                     PageNumber = i + 1,
-                    HasText = hasText,
+                    HasText = !string.IsNullOrWhiteSpace(text),
                     TextLength = text.Length
                 });
             }

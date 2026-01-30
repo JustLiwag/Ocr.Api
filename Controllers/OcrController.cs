@@ -11,21 +11,21 @@ namespace Ocr.Api.Controllers
     public class OcrController : ControllerBase
     {
         private readonly ITempFileService _tempFileService;
-        private readonly ILogger<OcrController> _logger;
         private readonly IPdfAnalysisService _pdfAnalysisService;
+        private readonly ILogger<OcrController> _logger;
 
         public OcrController(
             ITempFileService tempFileService,
             IPdfAnalysisService pdfAnalysisService,
             ILogger<OcrController> logger)
-                {
-                    _tempFileService = tempFileService;
-                    _pdfAnalysisService = pdfAnalysisService;
-                    _logger = logger;
-                }
+        {
+            _tempFileService = tempFileService;
+            _pdfAnalysisService = pdfAnalysisService;
+            _logger = logger;
+        }
 
         [HttpPost("pdf/searchable")]
-        [RequestSizeLimit(104_857_600)]
+        [RequestSizeLimit(104_857_600)] // 100 MB
         public async Task<IActionResult> MakePdfSearchable([FromForm] OcrPdfRequest request)
         {
             if (request.File == null || request.File.Length == 0)
@@ -47,10 +47,11 @@ namespace Ocr.Api.Controllers
                 });
             }
 
-            string tempFilePath = null;
+            string tempFilePath = await _tempFileService.SaveFileAsync(request.File);
 
             try
             {
+                // Save uploaded file to temp folder
                 tempFilePath = await _tempFileService.SaveFileAsync(request.File);
 
                 if (string.IsNullOrWhiteSpace(tempFilePath) || !System.IO.File.Exists(tempFilePath))
@@ -62,19 +63,27 @@ namespace Ocr.Api.Controllers
                     });
                 }
 
+                // Analyze PDF pages
                 var analysis = _pdfAnalysisService.Analyze(tempFilePath);
 
+                // Log analysis for debugging
+                foreach (var page in analysis.Pages)
+                {
+                    _logger.LogInformation($"Page {page.PageNumber}: " +
+                                           (page.HasText ? "Text Found" : "Image Only"));
+                }
+
+                // If PDF is fully searchable and ForceOcr is false, skip OCR
                 if (analysis.IsSearchable && !request.ForceOcr)
                 {
                     var bytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
                     return File(bytes, "application/pdf", request.File.FileName);
                 }
 
-                // TODO: Pass tempFilePath to OCR pipeline for image-only pages
-
-                // For now, just return the original PDF
-                var fileBytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
-                return File(fileBytes, "application/pdf", request.File.FileName);
+                // Phase 3: Send image-only pages to OCR (not implemented yet)
+                // For now, return original PDF as placeholder
+                var outputBytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
+                return File(outputBytes, "application/pdf", request.File.FileName);
             }
             catch (Exception ex)
             {
@@ -87,9 +96,10 @@ namespace Ocr.Api.Controllers
             }
             finally
             {
+                // Clean up temp file
                 if (tempFilePath != null && System.IO.File.Exists(tempFilePath))
                 {
-                    try { System.IO.File.Delete(tempFilePath); } catch { /* ignore */ }
+                    try { System.IO.File.Delete(tempFilePath); } catch { }
                 }
             }
         }
