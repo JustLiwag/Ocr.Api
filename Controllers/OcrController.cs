@@ -25,9 +25,10 @@ namespace Ocr.Api.Controllers
         }
 
         [HttpPost("pdf/searchable")]
-        [RequestSizeLimit(104_857_600)] // 100 MB
+        [RequestSizeLimit(104_857_600)] // 100 MB limit
         public async Task<IActionResult> MakePdfSearchable([FromForm] OcrPdfRequest request)
         {
+            // 1️⃣ Validate input
             if (request.File == null || request.File.Length == 0)
             {
                 return BadRequest(new OcrErrorResponse
@@ -47,11 +48,11 @@ namespace Ocr.Api.Controllers
                 });
             }
 
-            string tempFilePath = await _tempFileService.SaveFileAsync(request.File);
+            string tempFilePath = null;
 
             try
             {
-                // Save uploaded file to temp folder
+                // 2️⃣ Save file to temp folder
                 tempFilePath = await _tempFileService.SaveFileAsync(request.File);
 
                 if (string.IsNullOrWhiteSpace(tempFilePath) || !System.IO.File.Exists(tempFilePath))
@@ -63,25 +64,25 @@ namespace Ocr.Api.Controllers
                     });
                 }
 
-                // Analyze PDF pages
+                // 3️⃣ Analyze PDF pages
                 var analysis = _pdfAnalysisService.Analyze(tempFilePath);
 
-                // Log analysis for debugging
+                // 4️⃣ Log analysis for debugging / UI feedback
                 foreach (var page in analysis.Pages)
                 {
                     _logger.LogInformation($"Page {page.PageNumber}: " +
                                            (page.HasText ? "Text Found" : "Image Only"));
                 }
 
-                // If PDF is fully searchable and ForceOcr is false, skip OCR
+                // 5️⃣ Skip OCR if fully searchable
                 if (analysis.IsSearchable && !request.ForceOcr)
                 {
                     var bytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
                     return File(bytes, "application/pdf", request.File.FileName);
                 }
 
-                // Phase 3: Send image-only pages to OCR (not implemented yet)
-                // For now, return original PDF as placeholder
+                // 6️⃣ Placeholder for Phase 3 OCR
+                // Here we will later extract image-only pages and pass to Tesseract
                 var outputBytes = await System.IO.File.ReadAllBytesAsync(tempFilePath);
                 return File(outputBytes, "application/pdf", request.File.FileName);
             }
@@ -96,7 +97,7 @@ namespace Ocr.Api.Controllers
             }
             finally
             {
-                // Clean up temp file
+                // 7️⃣ Clean up temp file
                 if (tempFilePath != null && System.IO.File.Exists(tempFilePath))
                 {
                     try { System.IO.File.Delete(tempFilePath); } catch { }
