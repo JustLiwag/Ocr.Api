@@ -9,9 +9,8 @@ namespace Ocr.Api.Services.Rendering
 {
     public class GhostscriptRenderService : IPdfRenderService
     {
-        public async Task<List<string>> RenderAsync(string pdfPath, int dpi = 300)
+        public async Task<List<string>> RenderAsync(string pdfPath, string baseDir, int dpi = 300)
         {
-            var baseDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results"; // custom folder
             var outputDir = Path.Combine(baseDir, Guid.NewGuid().ToString());
             Directory.CreateDirectory(outputDir);
 

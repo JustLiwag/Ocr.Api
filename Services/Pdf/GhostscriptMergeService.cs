@@ -4,9 +4,8 @@
 
     public class GhostscriptMergeService : IPdfMergeService
     {
-        public async Task<string> MergeAsync(IEnumerable<string> pdfPaths)
+        public async Task<string> MergeAsync(IEnumerable<string> pdfPaths, string baseDir)
         {
-            var baseDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results"; // custom folder
             var output = Path.Combine(baseDir, $"ocr_{Guid.NewGuid()}.pdf");
             var inputs = string.Join(" ", pdfPaths.Select(p => $"\"{p}\""));
 
