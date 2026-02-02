@@ -18,6 +18,11 @@ builder.Services.AddScoped<IPdfTextDetector, PdfPigTextDetector>();
 builder.Services.AddScoped<IPdfRenderService, GhostscriptRenderService>();
 builder.Services.AddScoped<ITesseractService, TesseractService>();
 
+// PDF Merge Service
+builder.Services.AddScoped<IPdfMergeService, GhostscriptMergeService>();
+
+
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

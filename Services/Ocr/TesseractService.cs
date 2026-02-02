@@ -6,23 +6,51 @@ namespace Ocr.Api.Services.Ocr
 {
     public class TesseractService : ITesseractService
     {
-        public async Task<string> RunOcrAsync(string imagePath, string lang = "eng")
+        public async Task<string> RunOcrAsync(
+    string imagePath,
+    string lang,
+    string tessDataDir)
         {
-            var outputBase = Path.ChangeExtension(imagePath, null);
+            var outputBase = Path.Combine(
+                Path.GetDirectoryName(imagePath)!,
+                Path.GetFileNameWithoutExtension(imagePath)
+            );
 
-            var args = $"\"{imagePath}\" \"{outputBase}\" -l {lang} pdf";
+            var args =
+    $"\"{imagePath}\" \"{outputBase}\" " +
+    $"-l {lang} --tessdata-dir \"{tessDataDir}\" " +
+    "-c tessedit_create_pdf=1 pdf";
 
-            var psi = new ProcessStartInfo("tesseract", args)
+            var psi = new ProcessStartInfo
             {
-                RedirectStandardError = true,
+                FileName = "tesseract",
+                Arguments = args,
                 UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
                 CreateNoWindow = true
             };
 
-            using var proc = Process.Start(psi);
-            await proc.WaitForExitAsync();
+            using var process = Process.Start(psi)!;
 
-            return outputBase + ".pdf";
+            string stdout = await process.StandardOutput.ReadToEndAsync();
+            string stderr = await process.StandardError.ReadToEndAsync();
+
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+            {
+                throw new Exception(
+                    $"Tesseract failed.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}");
+            }
+
+            var pdfPath = outputBase + ".pdf";
+
+            if (!File.Exists(pdfPath))
+                throw new FileNotFoundException("OCR PDF not created", pdfPath);
+
+            return pdfPath;
         }
+
     }
 }
