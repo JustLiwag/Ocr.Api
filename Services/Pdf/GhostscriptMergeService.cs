@@ -6,7 +6,8 @@
     {
         public async Task<string> MergeAsync(IEnumerable<string> pdfPaths)
         {
-            var output = Path.Combine(Path.GetTempPath(), $"ocr_{Guid.NewGuid()}.pdf");
+            var baseDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results"; // custom folder
+            var output = Path.Combine(baseDir, $"ocr_{Guid.NewGuid()}.pdf");
             var inputs = string.Join(" ", pdfPaths.Select(p => $"\"{p}\""));
 
             var args = $"-dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile=\"{output}\" {inputs}";
