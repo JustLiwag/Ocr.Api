@@ -11,7 +11,8 @@ namespace Ocr.Api.Services.Rendering
     {
         public async Task<List<string>> RenderAsync(string pdfPath, int dpi = 300)
         {
-            var outputDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            var baseDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results"; // custom folder
+            var outputDir = Path.Combine(baseDir, Guid.NewGuid().ToString());
             Directory.CreateDirectory(outputDir);
 
             var outputPattern = Path.Combine(outputDir, "page-%03d.png");
