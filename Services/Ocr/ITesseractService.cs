@@ -4,6 +4,9 @@ namespace Ocr.Api.Services.Ocr
 {
     public interface ITesseractService
     {
-        Task<string> RunOcrAsync(string imagePath, string lang = "eng");
+        Task<string> RunOcrAsync(
+    string imagePath,
+    string lang,
+    string tessDataDir);
     }
 }

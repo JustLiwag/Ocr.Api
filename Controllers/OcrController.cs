@@ -17,17 +17,24 @@ namespace Ocr.Api.Controllers
         private readonly IPdfTextDetector _pdfTextDetector;
         private readonly IPdfRenderService _renderService;
         private readonly ITesseractService _tesseractService;
+        private readonly IPdfMergeService _pdfMergeService;
+        private readonly IConfiguration _config;
+
 
         public OcrController(
             ITempFileService tempFileService,
             IPdfTextDetector pdfTextDetector,
             IPdfRenderService renderService,
-            ITesseractService tesseractService)
+            ITesseractService tesseractService,
+            IPdfMergeService pdfMergeService,
+            IConfiguration config)
         {
             _tempFileService = tempFileService;
             _pdfTextDetector = pdfTextDetector;
             _renderService = renderService;
             _tesseractService = tesseractService;
+            _pdfMergeService = pdfMergeService;
+            _config = config;
         }
 
         [HttpPost("manual")]
@@ -39,16 +46,30 @@ namespace Ocr.Api.Controllers
                 return Ok("PDF already searchable.");
 
             var images = await _renderService.RenderAsync(pdfPath);
-            var ocrResults = new List<string>();
+            bool useBest = false;
+
+            var tessDataPath = useBest
+                ? _config["Tesseract:Best"]
+                : _config["Tesseract:Fast"];
+
+            var pagePdfs = new List<string>();
 
             foreach (var image in images)
-                ocrResults.Add(await _tesseractService.RunOcrAsync(image));
+            {
+                var pdf = await _tesseractService.RunOcrAsync(image, "eng", tessDataPath);
+                Console.WriteLine($"OCR PDF created: {pdf}");
+                pagePdfs.Add(pdf);
+            }
+
+            var mergedPdf = await _pdfMergeService.MergeAsync(pagePdfs);
+
 
             return Ok(new
             {
-                Pages = ocrResults.Count,
-                OutputFiles = ocrResults
+                Pages = pagePdfs.Count,
+                OutputPdf = mergedPdf
             });
+    
         }
     }
 }
