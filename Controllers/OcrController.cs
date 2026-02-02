@@ -41,19 +41,19 @@ namespace Ocr.Api.Controllers
         public async Task<IActionResult> RunManualOcr(IFormFile file)
         {
             var baseDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results"; // custom folder
-            var pdfPath = await _tempFileService.SaveFileAsync(file);
+            var pdfPath = await _tempFileService.SaveFileAsync(file); // creates temp file
 
             if (_pdfTextDetector.HasText(pdfPath))
                 return Ok("PDF already searchable.");
 
-            var images = await _renderService.RenderAsync(pdfPath, baseDir, 300);
-            bool useBest = true;
+            var images = await _renderService.RenderAsync(pdfPath, baseDir, 300); // renders images with Ghostscript
+            bool useBest = false;
 
             var tessDataPath = useBest
                 ? _config["Tesseract:Best"]
                 : _config["Tesseract:Fast"];
 
-            var pagePdfs = new List<string>();
+            var pagePdfs = new List<string>(); // stores individual page PDFs
 
             foreach (var image in images)
             {
@@ -62,7 +62,7 @@ namespace Ocr.Api.Controllers
                 pagePdfs.Add(pdf);
             }
 
-            var mergedPdf = await _pdfMergeService.MergeAsync(pagePdfs, baseDir);
+            var mergedPdf = await _pdfMergeService.MergeAsync(pagePdfs, baseDir); // merges page PDFs
 
 
             return Ok(new
