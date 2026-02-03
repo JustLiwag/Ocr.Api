@@ -2,7 +2,10 @@
 {
     public interface IPdfMergeService
     {
-        Task<string> MergeAsync(IEnumerable<string> pdfPaths, string baseDir);
+        Task<string> MergeAsync(
+    IEnumerable<string> pdfPaths,
+    string baseDir,
+    string outputFileName);
     }
 
 }

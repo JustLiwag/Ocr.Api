@@ -40,31 +40,52 @@ namespace Ocr.Api.Controllers
         [HttpPost("manual")]
         public async Task<IActionResult> RunManualOcr(IFormFile file)
         {
-            var baseDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results"; // custom folder
-            var pdfPath = await _tempFileService.SaveFileAsync(file); // creates temp file
+            var rootDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results";
+
+            // 🔹 Use uploaded file name (without extension) for folder & PDF
+            var originalName = Path.GetFileNameWithoutExtension(file.FileName);
+            var safeName = string.Concat(
+                originalName.Split(Path.GetInvalidFileNameChars())
+            );
+
+            var jobDir = Path.Combine(rootDir, safeName);
+            Directory.CreateDirectory(jobDir);
+
+            var pdfPath = await _tempFileService.SaveFileAsync(file);
 
             if (_pdfTextDetector.HasText(pdfPath))
                 return Ok("PDF already searchable.");
 
-            var images = await _renderService.RenderAsync(pdfPath, baseDir, 300); // renders images with Ghostscript
+            // ✅ Render PNGs INTO job folder
+            var images = await _renderService.RenderAsync(pdfPath, jobDir, 300);
+
             bool useBest = false;
 
             var tessDataPath = useBest
                 ? _config["Tesseract:Best"]
                 : _config["Tesseract:Fast"];
 
-            var pagePdfs = new List<string>(); // stores individual page PDFs
+            var pagePdfs = new List<string>();
 
             foreach (var image in images)
             {
-                var pdf = await _tesseractService.RunOcrAsync(image, "eng", tessDataPath);
-                Console.WriteLine($"OCR PDF created: {pdf}");
+                var pdf = await _tesseractService.RunOcrAsync(
+                    image,
+                    "eng",
+                    tessDataPath
+                );
+
                 pagePdfs.Add(pdf);
             }
 
-            var mergedPdf = await _pdfMergeService.MergeAsync(pagePdfs, baseDir); // merges page PDFs
+            // ✅ Merge INTO SAME folder with SAME name
+            var mergedPdf = await _pdfMergeService.MergeAsync(
+                pagePdfs,
+                jobDir,
+                safeName
+            );
 
-            // 🔥 CLEANUP HERE
+            // 🔥 CLEANUP (keep only merged PDF)
             if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
             {
                 CleanupIntermediateFiles(images, pagePdfs, mergedPdf);
@@ -75,8 +96,8 @@ namespace Ocr.Api.Controllers
                 Pages = pagePdfs.Count,
                 OutputPdf = mergedPdf
             });
-    
         }
+
 
         private void CleanupIntermediateFiles(
             IEnumerable<string> imageFiles,
