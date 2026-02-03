@@ -64,6 +64,11 @@ namespace Ocr.Api.Controllers
 
             var mergedPdf = await _pdfMergeService.MergeAsync(pagePdfs, baseDir); // merges page PDFs
 
+            // 🔥 CLEANUP HERE
+            if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
+            {
+                CleanupIntermediateFiles(images, pagePdfs, mergedPdf);
+            }
 
             return Ok(new
             {
@@ -71,6 +76,33 @@ namespace Ocr.Api.Controllers
                 OutputPdf = mergedPdf
             });
     
+        }
+
+        private void CleanupIntermediateFiles(
+            IEnumerable<string> imageFiles,
+            IEnumerable<string> pagePdfFiles,
+            string mergedPdfPath)
+        {
+            var mergedFileName = Path.GetFileName(mergedPdfPath);
+
+            foreach (var file in imageFiles.Concat(pagePdfFiles))
+            {
+                try
+                {
+                    // Extra safety: never delete the merged PDF
+                    if (Path.GetFileName(file)
+                        .Equals(mergedFileName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (System.IO.File.Exists(file))
+                        System.IO.File.Delete(file);
+                }
+                catch
+                {
+                    // Swallow errors intentionally
+                    // (file locks, antivirus, etc.)
+                }
+            }
         }
     }
 }
