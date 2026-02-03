@@ -100,11 +100,14 @@ namespace Ocr.Api.Controllers
 
 
         private void CleanupIntermediateFiles(
-            IEnumerable<string> imageFiles,
-            IEnumerable<string> pagePdfFiles,
-            string mergedPdfPath)
+    IEnumerable<string> imageFiles,
+    IEnumerable<string> pagePdfFiles,
+    string mergedPdfPath)
         {
             var mergedFileName = Path.GetFileName(mergedPdfPath);
+
+            // Track parent directories of deleted files
+            var directoriesToCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var file in imageFiles.Concat(pagePdfFiles))
             {
@@ -116,14 +119,35 @@ namespace Ocr.Api.Controllers
                         continue;
 
                     if (System.IO.File.Exists(file))
+                    {
+                        directoriesToCheck.Add(Path.GetDirectoryName(file)!);
                         System.IO.File.Delete(file);
+                    }
                 }
                 catch
                 {
-                    // Swallow errors intentionally
+                    // Intentionally swallow errors
                     // (file locks, antivirus, etc.)
                 }
             }
+
+            // 🔥 Remove empty per-page folders
+            foreach (var dir in directoriesToCheck)
+            {
+                try
+                {
+                    if (Directory.Exists(dir) &&
+                        !Directory.EnumerateFileSystemEntries(dir).Any())
+                    {
+                        Directory.Delete(dir);
+                    }
+                }
+                catch
+                {
+                    // Ignore folder delete issues
+                }
+            }
         }
+
     }
 }
