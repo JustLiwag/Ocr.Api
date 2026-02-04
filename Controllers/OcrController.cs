@@ -110,7 +110,7 @@ namespace Ocr.Api.Controllers
                 images = (await _renderService.RenderAsync(inputPath, jobDir, 300)).ToList();
             }
 
-            bool useBest = false;
+            bool useBest = _config.GetValue<bool>("Ocr:UseBest");
 
             var tessDataPath = useBest
                 ? _config["Tesseract:Best"]
