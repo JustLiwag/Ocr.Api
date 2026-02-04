@@ -38,11 +38,11 @@ namespace Ocr.Api.Controllers
         }
 
         [HttpPost("manual")]
+        [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunManualOcr(IFormFile file)
         {
             var rootDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results";
 
-            // 🔹 Use uploaded file name (without extension) for folder & PDF
             var originalName = Path.GetFileNameWithoutExtension(file.FileName);
             var safeName = string.Concat(
                 originalName.Split(Path.GetInvalidFileNameChars())
@@ -51,13 +51,23 @@ namespace Ocr.Api.Controllers
             var jobDir = Path.Combine(rootDir, safeName);
             Directory.CreateDirectory(jobDir);
 
-            var pdfPath = await _tempFileService.SaveFileAsync(file);
+            var inputPath = await _tempFileService.SaveFileAsync(file);
 
-            if (_pdfTextDetector.HasText(pdfPath))
-                return Ok("PDF already searchable.");
+            var images = new List<string>();
 
-            // ✅ Render PNGs INTO job folder
-            var images = await _renderService.RenderAsync(pdfPath, jobDir, 300);
+            // 🔹 IMAGE INPUT (PNG / JPG / TIFF / Clipboard)
+            if (IsImageFile(file.FileName))
+            {
+                images.Add(inputPath);
+            }
+            // 🔹 PDF INPUT (existing behavior)
+            else
+            {
+                if (_pdfTextDetector.HasText(inputPath))
+                    return Ok("PDF already searchable.");
+
+                images = (await _renderService.RenderAsync(inputPath, jobDir, 300)).ToList();
+            }
 
             bool useBest = false;
 
@@ -97,6 +107,7 @@ namespace Ocr.Api.Controllers
                 OutputPdf = mergedPdf
             });
         }
+
 
 
         private void CleanupIntermediateFiles(
@@ -148,6 +159,20 @@ namespace Ocr.Api.Controllers
                 }
             }
         }
+
+        private static bool IsImageFile(string fileName)
+        {
+            var ext = Path.GetExtension(fileName).ToLowerInvariant();
+            return ext == ".png" ||
+                   ext == ".jpg" ||
+                   ext == ".jpeg" ||
+                   ext == ".tif" ||
+                   ext == ".jfif" ||
+                   ext == ".webp" ||
+                   ext == ".tiff";
+        }
+
+
 
     }
 }
