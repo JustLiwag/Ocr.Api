@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Ocr.Api.Services.FileStorage;
 using Ocr.Api.Services.Pdf;
 using Ocr.Api.Services.Rendering;
+using Ocr.Api.Services.ImageProcessing;
 using Ocr.Api.Services.Ocr;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -19,6 +20,8 @@ namespace Ocr.Api.Controllers
         private readonly ITesseractService _tesseractService;
         private readonly IPdfMergeService _pdfMergeService;
         private readonly IConfiguration _config;
+        private readonly IImagePreprocessor _imagePreprocessor;
+
 
 
         public OcrController(
@@ -27,7 +30,8 @@ namespace Ocr.Api.Controllers
             IPdfRenderService renderService,
             ITesseractService tesseractService,
             IPdfMergeService pdfMergeService,
-            IConfiguration config)
+            IConfiguration config,
+            IImagePreprocessor imagePreprocessor)
         {
             _tempFileService = tempFileService;
             _pdfTextDetector = pdfTextDetector;
@@ -35,6 +39,7 @@ namespace Ocr.Api.Controllers
             _tesseractService = tesseractService;
             _pdfMergeService = pdfMergeService;
             _config = config;
+            _imagePreprocessor = imagePreprocessor;
         }
 
         // Single File OCR
@@ -110,7 +115,7 @@ namespace Ocr.Api.Controllers
                 images = (await _renderService.RenderAsync(inputPath, jobDir, 300)).ToList();
             }
 
-            bool useBest = false;
+            bool useBest = _config.GetValue<bool>("Ocr:UseBest");
 
             var tessDataPath = useBest
                 ? _config["Tesseract:Best"]
@@ -120,9 +125,13 @@ namespace Ocr.Api.Controllers
 
             foreach (var image in images)
             {
+                // 🔥 PREPROCESS IMAGE HERE
+                //var processedImage = _imagePreprocessor.Preprocess(image);
+
                 var pdf = await _tesseractService.RunOcrAsync(
                     image,
-                    "eng",
+                    //processedImage,
+                    "eng+osd",
                     tessDataPath
                 );
 

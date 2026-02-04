@@ -21,6 +21,13 @@ namespace Ocr.Api.Services.Ocr
     $"-l {lang} --tessdata-dir \"{tessDataDir}\" " +
     "-c tessedit_create_pdf=1 pdf";
 
+            //        var args =
+            //$"\"{imagePath}\" \"{outputBase}\" " +
+            //$"-l {lang} " +
+            //$"--tessdata-dir \"{tessDataDir}\" " +
+            //"--oem 1 --psm 1 pdf";
+                
+
             var psi = new ProcessStartInfo
             {
                 FileName = "tesseract",

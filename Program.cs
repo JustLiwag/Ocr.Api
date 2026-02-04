@@ -21,6 +21,9 @@ builder.Services.AddScoped<ITesseractService, TesseractService>();
 // PDF Merge Service
 builder.Services.AddScoped<IPdfMergeService, GhostscriptMergeService>();
 
+builder.Services.AddSingleton<
+    Ocr.Api.Services.ImageProcessing.IImagePreprocessor,
+    Ocr.Api.Services.ImageProcessing.ImageMagickPreprocessor>();
 
 
 var app = builder.Build();
