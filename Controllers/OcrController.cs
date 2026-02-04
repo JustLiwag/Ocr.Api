@@ -38,6 +38,7 @@ namespace Ocr.Api.Controllers
         }
 
         [HttpPost("manual")]
+        [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunManualOcr(IFormFile file)
         {
             var rootDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results";
@@ -51,13 +52,23 @@ namespace Ocr.Api.Controllers
             var jobDir = Path.Combine(rootDir, safeName);
             Directory.CreateDirectory(jobDir);
 
-            var pdfPath = await _tempFileService.SaveFileAsync(file);
+            var inputPath = await _tempFileService.SaveFileAsync(file);
 
-            if (_pdfTextDetector.HasText(pdfPath))
-                return Ok("PDF already searchable.");
+            var images = new List<string>();
 
-            // ✅ Render PNGs INTO job folder
-            var images = await _renderService.RenderAsync(pdfPath, jobDir, 300);
+            // Image input (PNG/JPG/TIFF/Clipboard)
+            if (IsImageFile(file.FileName))
+            {
+                images.Add(inputPath);
+            }
+            else
+            {
+                if (_pdfTextDetector.HasText(inputPath))
+                    return Ok("PDF already searchable.");
+
+                // ✅ Render PNGs INTO job folder
+                images = await _renderService.RenderAsync(inputPath, jobDir, 300);
+            }
 
             bool useBest = false;
 
@@ -147,6 +158,18 @@ namespace Ocr.Api.Controllers
                     // Ignore folder delete issues
                 }
             }
+        }
+
+        private static bool IsImageFile(string fileName)
+        {
+            var ext = Path.GetExtension(fileName).ToLowerInvariant();
+            return ext == ".png" ||
+           ext == ".jpg" ||
+           ext == ".jpeg" ||
+           ext == ".tif" ||
+           ext == ".tiff" ||
+           ext == ".webp";
+
         }
 
     }
