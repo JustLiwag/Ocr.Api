@@ -107,7 +107,7 @@ namespace Ocr.Api.Controllers
                     };
                 }
 
-                images = (await _renderService.RenderAsync(inputPath, jobDir, 300)).ToList();
+                images = (await _renderService.RenderAsync(inputPath, jobDir, 400)).ToList();
             }
 
             bool useBest = _config.GetValue<bool>("Ocr:UseBest");
@@ -122,7 +122,7 @@ namespace Ocr.Api.Controllers
             {
                 var pdf = await _tesseractService.RunOcrAsync(
                     image,
-                    "eng",
+                    "eng+osd",
                     tessDataPath
                 );
 

@@ -7,19 +7,27 @@ namespace Ocr.Api.Services.Ocr
     public class TesseractService : ITesseractService
     {
         public async Task<string> RunOcrAsync(
-    string imagePath,
-    string lang,
-    string tessDataDir)
+        string imagePath,
+        string lang,
+        string tessDataDir)
         {
             var outputBase = Path.Combine(
                 Path.GetDirectoryName(imagePath)!,
                 Path.GetFileNameWithoutExtension(imagePath)
             );
 
+            //        var args =
+            //$"\"{imagePath}\" \"{outputBase}\" " +
+            //$"-l {lang} --tessdata-dir \"{tessDataDir}\" " +
+            //"-c tessedit_create_pdf=1 pdf";
+
             var args =
-    $"\"{imagePath}\" \"{outputBase}\" " +
-    $"-l {lang} --tessdata-dir \"{tessDataDir}\" " +
-    "-c tessedit_create_pdf=1 pdf";
+            $"\"{imagePath}\" \"{outputBase}\" " +
+            $"-l {lang} " +
+            $"--tessdata-dir \"{tessDataDir}\" " +
+            //"--oem 1 " +
+            "-c tessedit_create_pdf=1 pdf";
+
 
             var psi = new ProcessStartInfo
             {
