@@ -111,9 +111,9 @@ namespace Ocr.Api.Controllers
 
 
         private void CleanupIntermediateFiles(
-    IEnumerable<string> imageFiles,
-    IEnumerable<string> pagePdfFiles,
-    string mergedPdfPath)
+        IEnumerable<string> imageFiles,
+        IEnumerable<string> pagePdfFiles,
+        string mergedPdfPath)
         {
             var mergedFileName = Path.GetFileName(mergedPdfPath);
 
@@ -171,6 +171,110 @@ namespace Ocr.Api.Controllers
            ext == ".webp";
 
         }
+
+        [HttpPost("batch")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> RunBatchOcr(List<IFormFile> files)
+        {
+            if (files == null || files.Count == 0)
+                return BadRequest("No files uploaded.");
+
+            var results = new List<object>();
+
+            foreach (var file in files)
+            {
+                try
+                {
+                    var result = await ProcessSingleFileAsync(file);
+                    results.Add(result);
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new
+                    {
+                        File = file.FileName,
+                        Error = ex.Message
+                    });
+                }
+            }
+
+            return Ok(results);
+        }
+
+        private async Task<object> ProcessSingleFileAsync(IFormFile file)
+        {
+            var rootDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results";
+
+            var originalName = Path.GetFileNameWithoutExtension(file.FileName);
+            var safeName = string.Concat(
+                originalName.Split(Path.GetInvalidFileNameChars())
+            );
+
+            var jobDir = Path.Combine(rootDir, safeName);
+            Directory.CreateDirectory(jobDir);
+
+            var inputPath = await _tempFileService.SaveFileAsync(file);
+
+            var images = new List<string>();
+
+            if (IsImageFile(file.FileName))
+            {
+                images.Add(inputPath);
+            }
+            else
+            {
+                if (_pdfTextDetector.HasText(inputPath))
+                {
+                    return new
+                    {
+                        File = file.FileName,
+                        Status = "Already searchable",
+                        OutputPdf = inputPath
+                    };
+                }
+
+                images = (await _renderService.RenderAsync(inputPath, jobDir, 300)).ToList();
+            }
+
+            bool useBest = false;
+
+            var tessDataPath = useBest
+                ? _config["Tesseract:Best"]
+                : _config["Tesseract:Fast"];
+
+            var pagePdfs = new List<string>();
+
+            foreach (var image in images)
+            {
+                var pdf = await _tesseractService.RunOcrAsync(
+                    image,
+                    "eng",
+                    tessDataPath
+                );
+
+                pagePdfs.Add(pdf);
+            }
+
+            var mergedPdf = await _pdfMergeService.MergeAsync(
+                pagePdfs,
+                jobDir,
+                safeName
+            );
+
+            if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
+            {
+                CleanupIntermediateFiles(images, pagePdfs, mergedPdf);
+            }
+
+            return new
+            {
+                File = file.FileName,
+                Pages = pagePdfs.Count,
+                OutputPdf = mergedPdf
+            };
+        }
+
+
 
     }
 }
