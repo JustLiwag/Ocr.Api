@@ -37,13 +37,48 @@ namespace Ocr.Api.Controllers
             _config = config;
         }
 
+        // Single File OCR
         [HttpPost("manual")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunManualOcr(IFormFile file)
         {
+            var result = await ProcessSingleFileAsync(file);
+            return Ok(result);
+        }
+        // Batch File OCR
+        [HttpPost("batch")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> RunBatchOcr(List<IFormFile> files)
+        {
+            if (files == null || files.Count == 0)
+                return BadRequest("No files uploaded.");
+
+            var results = new List<object>();
+
+            foreach (var file in files)
+            {
+                try
+                {
+                    var result = await ProcessSingleFileAsync(file);
+                    results.Add(result);
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new
+                    {
+                        File = file.FileName,
+                        Error = ex.Message
+                    });
+                }
+            }
+
+            return Ok(results);
+        }
+
+        private async Task<object> ProcessSingleFileAsync(IFormFile file)
+        {
             var rootDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results";
 
-            // 🔹 Use uploaded file name (without extension) for folder & PDF
             var originalName = Path.GetFileNameWithoutExtension(file.FileName);
             var safeName = string.Concat(
                 originalName.Split(Path.GetInvalidFileNameChars())
@@ -56,7 +91,6 @@ namespace Ocr.Api.Controllers
 
             var images = new List<string>();
 
-            // Image input (PNG/JPG/TIFF/Clipboard)
             if (IsImageFile(file.FileName))
             {
                 images.Add(inputPath);
@@ -64,10 +98,16 @@ namespace Ocr.Api.Controllers
             else
             {
                 if (_pdfTextDetector.HasText(inputPath))
-                    return Ok("PDF already searchable.");
+                {
+                    return new
+                    {
+                        File = file.FileName,
+                        Status = "Already searchable",
+                        OutputPdf = inputPath
+                    };
+                }
 
-                // ✅ Render PNGs INTO job folder
-                images = await _renderService.RenderAsync(inputPath, jobDir, 300);
+                images = (await _renderService.RenderAsync(inputPath, jobDir, 300)).ToList();
             }
 
             bool useBest = false;
@@ -89,31 +129,29 @@ namespace Ocr.Api.Controllers
                 pagePdfs.Add(pdf);
             }
 
-            // ✅ Merge INTO SAME folder with SAME name
             var mergedPdf = await _pdfMergeService.MergeAsync(
                 pagePdfs,
                 jobDir,
                 safeName
             );
 
-            // 🔥 CLEANUP (keep only merged PDF)
             if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
             {
                 CleanupIntermediateFiles(images, pagePdfs, mergedPdf);
             }
 
-            return Ok(new
+            return new
             {
+                File = file.FileName,
                 Pages = pagePdfs.Count,
                 OutputPdf = mergedPdf
-            });
+            };
         }
 
-
         private void CleanupIntermediateFiles(
-    IEnumerable<string> imageFiles,
-    IEnumerable<string> pagePdfFiles,
-    string mergedPdfPath)
+        IEnumerable<string> imageFiles,
+        IEnumerable<string> pagePdfFiles,
+        string mergedPdfPath)
         {
             var mergedFileName = Path.GetFileName(mergedPdfPath);
 
