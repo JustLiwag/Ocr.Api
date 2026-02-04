@@ -37,141 +37,15 @@ namespace Ocr.Api.Controllers
             _config = config;
         }
 
+        // Single File OCR
         [HttpPost("manual")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunManualOcr(IFormFile file)
         {
-            var rootDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results";
-
-            // 🔹 Use uploaded file name (without extension) for folder & PDF
-            var originalName = Path.GetFileNameWithoutExtension(file.FileName);
-            var safeName = string.Concat(
-                originalName.Split(Path.GetInvalidFileNameChars())
-            );
-
-            var jobDir = Path.Combine(rootDir, safeName);
-            Directory.CreateDirectory(jobDir);
-
-            var inputPath = await _tempFileService.SaveFileAsync(file);
-
-            var images = new List<string>();
-
-            // Image input (PNG/JPG/TIFF/Clipboard)
-            if (IsImageFile(file.FileName))
-            {
-                images.Add(inputPath);
-            }
-            else
-            {
-                if (_pdfTextDetector.HasText(inputPath))
-                    return Ok("PDF already searchable.");
-
-                // ✅ Render PNGs INTO job folder
-                images = await _renderService.RenderAsync(inputPath, jobDir, 300);
-            }
-
-            bool useBest = false;
-
-            var tessDataPath = useBest
-                ? _config["Tesseract:Best"]
-                : _config["Tesseract:Fast"];
-
-            var pagePdfs = new List<string>();
-
-            foreach (var image in images)
-            {
-                var pdf = await _tesseractService.RunOcrAsync(
-                    image,
-                    "eng",
-                    tessDataPath
-                );
-
-                pagePdfs.Add(pdf);
-            }
-
-            // ✅ Merge INTO SAME folder with SAME name
-            var mergedPdf = await _pdfMergeService.MergeAsync(
-                pagePdfs,
-                jobDir,
-                safeName
-            );
-
-            // 🔥 CLEANUP (keep only merged PDF)
-            if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
-            {
-                CleanupIntermediateFiles(images, pagePdfs, mergedPdf);
-            }
-
-            return Ok(new
-            {
-                Pages = pagePdfs.Count,
-                OutputPdf = mergedPdf
-            });
+            var result = await ProcessSingleFileAsync(file);
+            return Ok(result);
         }
-
-
-        private void CleanupIntermediateFiles(
-        IEnumerable<string> imageFiles,
-        IEnumerable<string> pagePdfFiles,
-        string mergedPdfPath)
-        {
-            var mergedFileName = Path.GetFileName(mergedPdfPath);
-
-            // Track parent directories of deleted files
-            var directoriesToCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var file in imageFiles.Concat(pagePdfFiles))
-            {
-                try
-                {
-                    // Extra safety: never delete the merged PDF
-                    if (Path.GetFileName(file)
-                        .Equals(mergedFileName, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    if (System.IO.File.Exists(file))
-                    {
-                        directoriesToCheck.Add(Path.GetDirectoryName(file)!);
-                        System.IO.File.Delete(file);
-                    }
-                }
-                catch
-                {
-                    // Intentionally swallow errors
-                    // (file locks, antivirus, etc.)
-                }
-            }
-
-            // 🔥 Remove empty per-page folders
-            foreach (var dir in directoriesToCheck)
-            {
-                try
-                {
-                    if (Directory.Exists(dir) &&
-                        !Directory.EnumerateFileSystemEntries(dir).Any())
-                    {
-                        Directory.Delete(dir);
-                    }
-                }
-                catch
-                {
-                    // Ignore folder delete issues
-                }
-            }
-        }
-
-        private static bool IsImageFile(string fileName)
-        {
-            var ext = Path.GetExtension(fileName).ToLowerInvariant();
-            return ext == ".png" ||
-           ext == ".jpg" ||
-           ext == ".jpeg" ||
-           ext == ".tif" ||
-           ext == ".tiff" ||
-           ext == ".webp";
-
-        }
-
+        // Batch File OCR
         [HttpPost("batch")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunBatchOcr(List<IFormFile> files)
@@ -274,7 +148,67 @@ namespace Ocr.Api.Controllers
             };
         }
 
+        private void CleanupIntermediateFiles(
+        IEnumerable<string> imageFiles,
+        IEnumerable<string> pagePdfFiles,
+        string mergedPdfPath)
+        {
+            var mergedFileName = Path.GetFileName(mergedPdfPath);
 
+            // Track parent directories of deleted files
+            var directoriesToCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var file in imageFiles.Concat(pagePdfFiles))
+            {
+                try
+                {
+                    // Extra safety: never delete the merged PDF
+                    if (Path.GetFileName(file)
+                        .Equals(mergedFileName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (System.IO.File.Exists(file))
+                    {
+                        directoriesToCheck.Add(Path.GetDirectoryName(file)!);
+                        System.IO.File.Delete(file);
+                    }
+                }
+                catch
+                {
+                    // Intentionally swallow errors
+                    // (file locks, antivirus, etc.)
+                }
+            }
+
+            // 🔥 Remove empty per-page folders
+            foreach (var dir in directoriesToCheck)
+            {
+                try
+                {
+                    if (Directory.Exists(dir) &&
+                        !Directory.EnumerateFileSystemEntries(dir).Any())
+                    {
+                        Directory.Delete(dir);
+                    }
+                }
+                catch
+                {
+                    // Ignore folder delete issues
+                }
+            }
+        }
+
+        private static bool IsImageFile(string fileName)
+        {
+            var ext = Path.GetExtension(fileName).ToLowerInvariant();
+            return ext == ".png" ||
+           ext == ".jpg" ||
+           ext == ".jpeg" ||
+           ext == ".tif" ||
+           ext == ".tiff" ||
+           ext == ".webp";
+
+        }
 
     }
 }
