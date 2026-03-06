@@ -4,6 +4,7 @@ using Ocr.Api.Services.FileStorage;
 using Ocr.Api.Services.Pdf;
 using Ocr.Api.Services.Rendering;
 using Ocr.Api.Services.Ocr;
+using Ocr.Api.Services.ImageProcessing;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -18,8 +19,8 @@ namespace Ocr.Api.Controllers
         private readonly IPdfRenderService _renderService;
         private readonly ITesseractService _tesseractService;
         private readonly IPdfMergeService _pdfMergeService;
+        private readonly IImagePreprocessingService _imagePreprocessingService;
         private readonly IConfiguration _config;
-
 
         public OcrController(
             ITempFileService tempFileService,
@@ -27,6 +28,7 @@ namespace Ocr.Api.Controllers
             IPdfRenderService renderService,
             ITesseractService tesseractService,
             IPdfMergeService pdfMergeService,
+            IImagePreprocessingService imagePreprocessingService,
             IConfiguration config)
         {
             _tempFileService = tempFileService;
@@ -34,6 +36,7 @@ namespace Ocr.Api.Controllers
             _renderService = renderService;
             _tesseractService = tesseractService;
             _pdfMergeService = pdfMergeService;
+            _imagePreprocessingService = imagePreprocessingService;
             _config = config;
         }
 
@@ -45,6 +48,7 @@ namespace Ocr.Api.Controllers
             var result = await ProcessSingleFileAsync(file);
             return Ok(result);
         }
+
         // Batch File OCR
         [HttpPost("batch")]
         [Consumes("multipart/form-data")]
@@ -77,12 +81,10 @@ namespace Ocr.Api.Controllers
 
         private async Task<object> ProcessSingleFileAsync(IFormFile file)
         {
-            var rootDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results";
+            var rootDir = @"C:\Users\emedeleon\Downloads\OCR Test Data\results";
 
             var originalName = Path.GetFileNameWithoutExtension(file.FileName);
-            var safeName = string.Concat(
-                originalName.Split(Path.GetInvalidFileNameChars())
-            );
+            var safeName = string.Concat(originalName.Split(Path.GetInvalidFileNameChars()));
 
             var jobDir = Path.Combine(rootDir, safeName);
             Directory.CreateDirectory(jobDir);
@@ -117,11 +119,16 @@ namespace Ocr.Api.Controllers
                 : _config["Tesseract:Fast"];
 
             var pagePdfs = new List<string>();
+            var processedImages = new List<string>();
 
             foreach (var image in images)
             {
+                // 🔥 Preprocess image using OpenCV
+                var processedImage = _imagePreprocessingService.Preprocess(image);
+                processedImages.Add(processedImage);
+
                 var pdf = await _tesseractService.RunOcrAsync(
-                    image,
+                    processedImage,
                     "eng+osd",
                     tessDataPath
                 );
@@ -137,7 +144,7 @@ namespace Ocr.Api.Controllers
 
             if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
             {
-                CleanupIntermediateFiles(images, pagePdfs, mergedPdf);
+                CleanupIntermediateFiles(images.Concat(processedImages), pagePdfs, mergedPdf);
             }
 
             return new
@@ -149,20 +156,18 @@ namespace Ocr.Api.Controllers
         }
 
         private void CleanupIntermediateFiles(
-        IEnumerable<string> imageFiles,
-        IEnumerable<string> pagePdfFiles,
-        string mergedPdfPath)
+            IEnumerable<string> imageFiles,
+            IEnumerable<string> pagePdfFiles,
+            string mergedPdfPath)
         {
             var mergedFileName = Path.GetFileName(mergedPdfPath);
 
-            // Track parent directories of deleted files
             var directoriesToCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var file in imageFiles.Concat(pagePdfFiles))
             {
                 try
                 {
-                    // Extra safety: never delete the merged PDF
                     if (Path.GetFileName(file)
                         .Equals(mergedFileName, StringComparison.OrdinalIgnoreCase))
                         continue;
@@ -175,12 +180,10 @@ namespace Ocr.Api.Controllers
                 }
                 catch
                 {
-                    // Intentionally swallow errors
-                    // (file locks, antivirus, etc.)
+                    // Ignore delete issues
                 }
             }
 
-            // 🔥 Remove empty per-page folders
             foreach (var dir in directoriesToCheck)
             {
                 try
@@ -202,13 +205,11 @@ namespace Ocr.Api.Controllers
         {
             var ext = Path.GetExtension(fileName).ToLowerInvariant();
             return ext == ".png" ||
-           ext == ".jpg" ||
-           ext == ".jpeg" ||
-           ext == ".tif" ||
-           ext == ".tiff" ||
-           ext == ".webp";
-
+                   ext == ".jpg" ||
+                   ext == ".jpeg" ||
+                   ext == ".tif" ||
+                   ext == ".tiff" ||
+                   ext == ".webp";
         }
-
     }
 }

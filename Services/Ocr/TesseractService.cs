@@ -23,10 +23,15 @@ namespace Ocr.Api.Services.Ocr
 
             var args =
             $"\"{imagePath}\" \"{outputBase}\" " +
-            $"-l {lang} " +
-            $"--tessdata-dir \"{tessDataDir}\" " +
-            //"--oem 1 " +
-            "-c tessedit_create_pdf=1 pdf";
+                $"-l {lang} " +
+                $"--tessdata-dir \"{tessDataDir}\" " +
+                "--oem 1 " +                  // LSTM engine for better OCR accuracy
+                "--psm 1 " +                  // Auto page segmentation with orientation & script detection
+                "-c tessedit_create_pdf=1 " + // Create searchable PDF
+                "-c textonly_pdf=0 " +        // Keep original image in PDF
+                "-c preserve_interword_spaces=1 " +
+                "-c pdf_font_hinting=1 " +
+                "pdf";
 
 
             var psi = new ProcessStartInfo
