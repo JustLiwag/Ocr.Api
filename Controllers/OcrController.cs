@@ -7,6 +7,7 @@ using Ocr.Api.Services.Ocr;
 using Ocr.Api.Services.ImageProcessing;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System.Linq;
 
 namespace Ocr.Api.Controllers
 {
@@ -64,6 +65,7 @@ namespace Ocr.Api.Controllers
                 try
                 {
                     var result = await ProcessSingleFileAsync(file);
+
                     results.Add(result);
                 }
                 catch (Exception ex)
@@ -71,12 +73,18 @@ namespace Ocr.Api.Controllers
                     results.Add(new
                     {
                         File = file.FileName,
+                        Status = "Failed",
                         Error = ex.Message
                     });
                 }
             }
 
-            return Ok(results);
+            return Ok(new
+            {
+                TotalFiles = files.Count,
+                Processed = results.Count,
+                Results = results
+            });
         }
 
         private async Task<object> ProcessSingleFileAsync(IFormFile file)
@@ -119,21 +127,22 @@ namespace Ocr.Api.Controllers
                 : _config["Tesseract:Fast"];
 
             var pagePdfs = new List<string>();
+            var confidences = new List<float>();
             var processedImages = new List<string>();
 
             foreach (var image in images)
             {
-                // 🔥 Preprocess image using OpenCV
                 var processedImage = _imagePreprocessingService.Preprocess(image);
                 processedImages.Add(processedImage);
 
-                var pdf = await _tesseractService.RunOcrAsync(
+                var ocrResult = await _tesseractService.RunOcrAsync(
                     processedImage,
                     "eng+osd",
                     tessDataPath
                 );
 
-                pagePdfs.Add(pdf);
+                pagePdfs.Add(ocrResult.PdfPath);
+                confidences.Add(ocrResult.Confidence);
             }
 
             var mergedPdf = await _pdfMergeService.MergeAsync(
@@ -142,16 +151,43 @@ namespace Ocr.Api.Controllers
                 safeName
             );
 
+            var overallConfidence = confidences.Count > 0
+                ? confidences.Average()
+                : 0;
+
+            // 🔥 Determine OCR quality
+            string quality;
+
+            if (overallConfidence >= 90)
+                quality = "Excellent";
+            else if (overallConfidence >= 75)
+                quality = "Good";
+            else if (overallConfidence >= 50)
+                quality = "Fair";
+            else
+                quality = "Poor";
+
+            // 🔥 Create quality folder
+            var qualityDir = Path.Combine(rootDir, quality);
+            Directory.CreateDirectory(qualityDir);
+
+            // 🔥 Move final PDF to that folder
+            var finalPdfPath = Path.Combine(qualityDir, Path.GetFileName(mergedPdf));
+
+            System.IO.File.Move(mergedPdf, finalPdfPath, true);
+
             if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
             {
-                CleanupIntermediateFiles(images.Concat(processedImages), pagePdfs, mergedPdf);
+                CleanupIntermediateFiles(images.Concat(processedImages), pagePdfs, finalPdfPath);
             }
 
             return new
             {
                 File = file.FileName,
                 Pages = pagePdfs.Count,
-                OutputPdf = mergedPdf
+                OcrConfidence = Math.Round(overallConfidence, 2),
+                Quality = quality,
+                OutputPdf = finalPdfPath
             };
         }
 
@@ -180,7 +216,6 @@ namespace Ocr.Api.Controllers
                 }
                 catch
                 {
-                    // Ignore delete issues
                 }
             }
 
@@ -196,7 +231,6 @@ namespace Ocr.Api.Controllers
                 }
                 catch
                 {
-                    // Ignore folder delete issues
                 }
             }
         }
