@@ -1,9 +1,12 @@
 using Ocr.Api.Services;
 using Ocr.Api.Services.FileStorage;
+using Ocr.Api.Services.ImageProcessing;
+using Ocr.Api.Services.Implementations;
+using Ocr.Api.Services.Implementations.Ocr.Api.Services.Implementations;
+using Ocr.Api.Services.Interfaces;
 using Ocr.Api.Services.Ocr;
 using Ocr.Api.Services.Pdf;
 using Ocr.Api.Services.Rendering;
-using Ocr.Api.Services.ImageProcessing;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,17 +17,21 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Dependency Injection
+// Existing Dependency Injection
 builder.Services.AddScoped<ITempFileService, TempFileService>();
 builder.Services.AddScoped<IPdfTextDetector, PdfPigTextDetector>();
 builder.Services.AddScoped<IPdfRenderService, GhostscriptRenderService>();
 builder.Services.AddScoped<ITesseractService, TesseractService>();
 builder.Services.AddScoped<IImagePreprocessingService, ImagePreprocessingService>();
-
-// PDF Merge Service
 builder.Services.AddScoped<IPdfMergeService, GhostscriptMergeService>();
 
-
+// New OCR Platform Services
+builder.Services.AddScoped<IOcrProcessingService, OcrProcessingService>();
+builder.Services.AddScoped<IOcrBatchService, OcrBatchService>();
+builder.Services.AddScoped<IOcrDocumentService, OcrDocumentService>();
+builder.Services.AddScoped<IOcrSuggestionService, OcrSuggestionService>();
+builder.Services.AddScoped<IOcrReviewService, OcrReviewService>();
+builder.Services.AddScoped<IDashboardService, DashboardService>();
 
 var app = builder.Build();
 
