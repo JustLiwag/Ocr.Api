@@ -13,7 +13,7 @@ namespace Ocr.Api.Services.Ocr
         private float CalculateConfidence(string tsvPath)
         {
             if (!File.Exists(tsvPath))
-                return 80;
+                return 0;
 
             var lines = File.ReadAllLines(tsvPath);
 
@@ -27,7 +27,7 @@ namespace Ocr.Api.Services.Ocr
                 if (cols.Length < 11)
                     continue;
 
-                if (float.TryParse(cols[10], out float conf))
+                if (float.TryParse(cols[10], NumberStyles.Any, CultureInfo.InvariantCulture, out float conf))
                 {
                     if (conf >= 0)
                     {
@@ -47,13 +47,13 @@ namespace Ocr.Api.Services.Ocr
         {
             var psi = new ProcessStartInfo
             {
-                FileName = _tesseractPath,        // Use full path to tesseract.exe
+                FileName = _tesseractPath,
                 Arguments = args,
                 UseShellExecute = false,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 CreateNoWindow = true,
-                WorkingDirectory = workingDir    // Important to produce TSV/PDF in correct folder
+                WorkingDirectory = workingDir
             };
 
             using var process = Process.Start(psi)!;
@@ -79,21 +79,36 @@ namespace Ocr.Api.Services.Ocr
 
             var workingDir = Path.GetDirectoryName(imagePath)!;
 
-            // 1️⃣ Generate PDF
-            var pdfArgs = $"\"{imagePath}\" \"{outputBase}\" -l {lang} --tessdata-dir \"{tessDataDir}\" --oem 1 --psm 1 -c tessedit_create_pdf=1 -c textonly_pdf=0 -c preserve_interword_spaces=1 -c pdf_font_hinting=1 pdf";
-            await RunProcessAsync(pdfArgs, workingDir);
-
-            // 2️⃣ Generate TSV
-            var tsvArgs = $"\"{imagePath}\" \"{outputBase}\" -l {lang} --tessdata-dir \"{tessDataDir}\" --oem 1 --psm 1 tsv";
-            await RunProcessAsync(tsvArgs, workingDir);
-
             var pdfPath = outputBase + ".pdf";
             var tsvPath = outputBase + ".tsv";
+
+            // Run OCR (generate PDF + TSV)
+            var args = $"\"{imagePath}\" \"{outputBase}\" " +
+                       $"-l {lang} " +
+                       $"--tessdata-dir \"{tessDataDir}\" " +
+                       $"--oem 1 " +
+                       $"--psm 6 " +
+                       $"-c tessedit_create_pdf=1 " +
+                       $"-c tessedit_create_tsv=1 " +
+                       $"-c textonly_pdf=0 " +
+                       $"-c preserve_interword_spaces=1 " +
+                       $"-c pdf_font_hinting=1";
+
+            await RunProcessAsync(args, workingDir);
 
             if (!File.Exists(pdfPath))
                 throw new FileNotFoundException("OCR PDF not created", pdfPath);
 
-            float confidence = CalculateConfidence(tsvPath);
+            // Wait for TSV to appear (sometimes filesystem delay)
+            for (int i = 0; i < 10 && !File.Exists(tsvPath); i++)
+            {
+                await Task.Delay(200);
+            }
+
+            float confidence = 0;
+
+            if (File.Exists(tsvPath))
+                confidence = CalculateConfidence(tsvPath);
 
             return new OcrResult
             {
