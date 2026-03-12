@@ -8,7 +8,7 @@ namespace Ocr.Api.Services.Ocr
 {
     public class TesseractService : ITesseractService
     {
-        private readonly string _tesseractPath = @"C:\Users\emedeleon\AppData\Local\Programs\Tesseract-OCR\tesseract.exe";
+        private readonly string _tesseractPath = @"C:\Users\jeliwag\AppData\Local\Programs\Tesseract-OCR\tesseract.exe";
 
         private float CalculateConfidence(string tsvPath)
         {
