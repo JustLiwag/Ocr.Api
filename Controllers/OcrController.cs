@@ -1,13 +1,10 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Ocr.Api.Services.FileStorage;
-using Ocr.Api.Services.Pdf;
-using Ocr.Api.Services.Rendering;
-using Ocr.Api.Services.Ocr;
-using Ocr.Api.Services.ImageProcessing;
+using Ocr.Api.Models;
+using Ocr.Api.Services.Interfaces;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using System.Linq;
 
 namespace Ocr.Api.Controllers
 {
@@ -15,235 +12,310 @@ namespace Ocr.Api.Controllers
     [Route("api/ocr")]
     public class OcrController : ControllerBase
     {
-        private readonly ITempFileService _tempFileService;
-        private readonly IPdfTextDetector _pdfTextDetector;
-        private readonly IPdfRenderService _renderService;
-        private readonly ITesseractService _tesseractService;
-        private readonly IPdfMergeService _pdfMergeService;
-        private readonly IImagePreprocessingService _imagePreprocessingService;
-        private readonly IConfiguration _config;
+        private readonly IOcrProcessingService _ocrProcessingService;
+        private readonly IOcrBatchService _ocrBatchService;
+        private readonly IOcrDocumentService _ocrDocumentService;
+        private readonly IOcrReviewService _ocrReviewService;
+        private readonly IOcrSuggestionService _ocrSuggestionService;
+        private readonly IDashboardService _dashboardService;
 
         public OcrController(
-            ITempFileService tempFileService,
-            IPdfTextDetector pdfTextDetector,
-            IPdfRenderService renderService,
-            ITesseractService tesseractService,
-            IPdfMergeService pdfMergeService,
-            IImagePreprocessingService imagePreprocessingService,
-            IConfiguration config)
+            IOcrProcessingService ocrProcessingService,
+            IOcrBatchService ocrBatchService,
+            IOcrDocumentService ocrDocumentService,
+            IOcrReviewService ocrReviewService,
+            IOcrSuggestionService ocrSuggestionService,
+            IDashboardService dashboardService)
         {
-            _tempFileService = tempFileService;
-            _pdfTextDetector = pdfTextDetector;
-            _renderService = renderService;
-            _tesseractService = tesseractService;
-            _pdfMergeService = pdfMergeService;
-            _imagePreprocessingService = imagePreprocessingService;
-            _config = config;
+            _ocrProcessingService = ocrProcessingService;
+            _ocrBatchService = ocrBatchService;
+            _ocrDocumentService = ocrDocumentService;
+            _ocrReviewService = ocrReviewService;
+            _ocrSuggestionService = ocrSuggestionService;
+            _dashboardService = dashboardService;
         }
 
-        // Single File OCR
-        [HttpPost("manual")]
+        /*
+            =========================================================
+            SINGLE FILE OCR
+            =========================================================
+        */
+
+        [HttpPost("process")]
         [Consumes("multipart/form-data")]
-        public async Task<IActionResult> RunManualOcr(IFormFile file)
+        public async Task<IActionResult> processSingle(
+            [FromForm] IFormFile file,
+            [FromForm] string sourceSystem,
+            [FromForm] string officeCode,
+            [FromForm] string documentTypeCode,
+            [FromForm] string sensitivityLevel,
+            [FromForm] string? externalDocumentId,
+            [FromForm] string? externalRecordId,
+            [FromForm] string? requestUserId)
         {
-            var result = await ProcessSingleFileAsync(file);
-            return Ok(result);
-        }
-
-        // Batch File OCR
-        [HttpPost("batch")]
-        [Consumes("multipart/form-data")]
-        public async Task<IActionResult> RunBatchOcr(List<IFormFile> files)
-        {
-            if (files == null || files.Count == 0)
-                return BadRequest("No files uploaded.");
-
-            var results = new List<object>();
-
-            foreach (var file in files)
+            try
             {
-                try
+                if (file == null || file.Length == 0)
                 {
-                    var result = await ProcessSingleFileAsync(file);
-
-                    results.Add(result);
-                }
-                catch (Exception ex)
-                {
-                    results.Add(new
+                    return BadRequest(new
                     {
-                        File = file.FileName,
-                        Status = "Failed",
-                        Error = ex.Message
+                        success = false,
+                        message = "No file uploaded."
                     });
                 }
-            }
 
-            return Ok(new
-            {
-                TotalFiles = files.Count,
-                Processed = results.Count,
-                Results = results
-            });
-        }
-
-        private async Task<object> ProcessSingleFileAsync(IFormFile file)
-        {
-            var rootDir = @"C:\Users\jeliwag\Downloads\OCR Test Data\results";
-
-            var originalName = Path.GetFileNameWithoutExtension(file.FileName);
-            var safeName = string.Concat(originalName.Split(Path.GetInvalidFileNameChars()));
-
-            var jobDir = Path.Combine(rootDir, safeName);
-            Directory.CreateDirectory(jobDir);
-
-            var inputPath = await _tempFileService.SaveFileAsync(file);
-
-            var images = new List<string>();
-
-            if (IsImageFile(file.FileName))
-            {
-                images.Add(inputPath);
-            }
-            else
-            {
-                if (_pdfTextDetector.HasText(inputPath))
+                OcrProcessRequestDto request = new OcrProcessRequestDto
                 {
-                    return new
-                    {
-                        File = file.FileName,
-                        Status = "Already searchable",
-                        OutputPdf = inputPath
-                    };
-                }
+                    sourceSystem = sourceSystem,
+                    officeCode = officeCode,
+                    documentTypeCode = documentTypeCode,
+                    sensitivityLevel = sensitivityLevel,
+                    externalDocumentId = externalDocumentId,
+                    externalRecordId = externalRecordId,
+                    originalFileName = file.FileName,
+                    requestUserId = requestUserId,
+                    returnSearchablePdfAsBase64 = false
+                };
 
-                images = (await _renderService.RenderAsync(inputPath, jobDir, 400)).ToList();
+                OcrProcessResponseDto response = await _ocrProcessingService.processSingleAsync(file, request);
+                return Ok(response);
             }
-
-            bool useBest = _config.GetValue<bool>("Ocr:UseBest");
-
-            var tessDataPath = useBest
-                ? _config["Tesseract:Best"]
-                : _config["Tesseract:Fast"];
-
-            var pagePdfs = new List<string>();
-            var confidences = new List<float>();
-            var processedImages = new List<string>();
-
-            foreach (var image in images)
+            catch (Exception ex)
             {
-                var processedImage = _imagePreprocessingService.Preprocess(image);
-                processedImages.Add(processedImage);
-
-                var ocrResult = await _tesseractService.RunOcrAsync(
-                    processedImage,
-                    "eng+osd",
-                    tessDataPath
-                );
-
-                pagePdfs.Add(ocrResult.PdfPath);
-                confidences.Add(ocrResult.Confidence);
-            }
-
-            var mergedPdf = await _pdfMergeService.MergeAsync(
-                pagePdfs,
-                jobDir,
-                safeName
-            );
-
-            var overallConfidence = confidences.Count > 0
-                ? confidences.Average()
-                : 0;
-
-            // 🔥 Determine OCR quality
-            string quality;
-
-            if (overallConfidence >= 90)
-                quality = "Excellent";
-            else if (overallConfidence >= 75)
-                quality = "Good";
-            else if (overallConfidence >= 50)
-                quality = "Fair";
-            else
-                quality = "Poor";
-
-            // 🔥 Create quality folder
-            var qualityDir = Path.Combine(rootDir, quality);
-            Directory.CreateDirectory(qualityDir);
-
-            // 🔥 Move final PDF to that folder
-            var finalPdfPath = Path.Combine(qualityDir, Path.GetFileName(mergedPdf));
-
-            System.IO.File.Move(mergedPdf, finalPdfPath, true);
-
-            if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
-            {
-                CleanupIntermediateFiles(images.Concat(processedImages), pagePdfs, finalPdfPath);
-            }
-
-            return new
-            {
-                File = file.FileName,
-                Pages = pagePdfs.Count,
-                OcrConfidence = Math.Round(overallConfidence, 2),
-                Quality = quality,
-                OutputPdf = finalPdfPath
-            };
-        }
-
-        private void CleanupIntermediateFiles(
-            IEnumerable<string> imageFiles,
-            IEnumerable<string> pagePdfFiles,
-            string mergedPdfPath)
-        {
-            var mergedFileName = Path.GetFileName(mergedPdfPath);
-
-            var directoriesToCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var file in imageFiles.Concat(pagePdfFiles))
-            {
-                try
+                return StatusCode(500, new
                 {
-                    if (Path.GetFileName(file)
-                        .Equals(mergedFileName, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    if (System.IO.File.Exists(file))
-                    {
-                        directoriesToCheck.Add(Path.GetDirectoryName(file)!);
-                        System.IO.File.Delete(file);
-                    }
-                }
-                catch
-                {
-                }
-            }
-
-            foreach (var dir in directoriesToCheck)
-            {
-                try
-                {
-                    if (Directory.Exists(dir) &&
-                        !Directory.EnumerateFileSystemEntries(dir).Any())
-                    {
-                        Directory.Delete(dir);
-                    }
-                }
-                catch
-                {
-                }
+                    success = false,
+                    message = "Failed to process OCR file.",
+                    error = ex.Message
+                });
             }
         }
 
-        private static bool IsImageFile(string fileName)
+        /*
+            =========================================================
+            BATCH OCR
+            =========================================================
+        */
+
+        [HttpPost("process/batch")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> processBatch(
+            [FromForm] List<IFormFile> files,
+            [FromForm] string sourceSystem,
+            [FromForm] string officeCode,
+            [FromForm] string documentTypeCode,
+            [FromForm] string sensitivityLevel,
+            [FromForm] string? requestUserId)
         {
-            var ext = Path.GetExtension(fileName).ToLowerInvariant();
-            return ext == ".png" ||
-                   ext == ".jpg" ||
-                   ext == ".jpeg" ||
-                   ext == ".tif" ||
-                   ext == ".tiff" ||
-                   ext == ".webp";
+            try
+            {
+                if (files == null || files.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "No files uploaded."
+                    });
+                }
+
+                OcrBatchProcessRequestDto request = new OcrBatchProcessRequestDto
+                {
+                    sourceSystem = sourceSystem,
+                    officeCode = officeCode,
+                    documentTypeCode = documentTypeCode,
+                    sensitivityLevel = sensitivityLevel,
+                    requestUserId = requestUserId
+                };
+
+                OcrBatchProcessResponseDto response = await _ocrBatchService.processBatchAsync(files, request);
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to process batch OCR request.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        /*
+            =========================================================
+            OCR DOCUMENTS
+            =========================================================
+        */
+
+        [HttpGet("documents/{ocrDocumentId:long}")]
+        public async Task<IActionResult> getDocument(long ocrDocumentId)
+        {
+            try
+            {
+                OcrDocumentDetailDto? result = await _ocrDocumentService.getByIdAsync(ocrDocumentId);
+
+                if (result == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "OCR document not found."
+                    });
+                }
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to retrieve OCR document.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [HttpGet("documents/external/{externalDocumentId}")]
+        public async Task<IActionResult> getDocumentByExternalId(string externalDocumentId)
+        {
+            try
+            {
+                OcrDocumentDetailDto? result = await _ocrDocumentService.getByExternalDocumentIdAsync(externalDocumentId);
+
+                if (result == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "OCR document not found."
+                    });
+                }
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to retrieve OCR document by external document ID.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [HttpPost("documents/search")]
+        public async Task<IActionResult> searchDocuments([FromBody] OcrDocumentFilterDto filter)
+        {
+            try
+            {
+                PagedResultDto<OcrDocumentDetailDto> result = await _ocrDocumentService.getPagedAsync(filter);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to search OCR documents.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        /*
+            =========================================================
+            REVIEW
+            =========================================================
+        */
+
+        [HttpPost("review")]
+        public async Task<IActionResult> submitReview([FromBody] OcrReviewSubmitRequestDto request)
+        {
+            try
+            {
+                OcrReviewSubmitResponseDto response = await _ocrReviewService.submitReviewAsync(request);
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to submit OCR review.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        /*
+            =========================================================
+            SUGGESTIONS
+            =========================================================
+        */
+
+        [HttpPost("suggest")]
+        public async Task<IActionResult> getSuggestions([FromBody] OcrSuggestionRequestDto request)
+        {
+            try
+            {
+                OcrSuggestionResponseDto response = await _ocrSuggestionService.getSuggestionsAsync(request);
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to get OCR suggestions.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        /*
+            =========================================================
+            DASHBOARD
+            =========================================================
+        */
+
+        [HttpGet("dashboard/summary")]
+        public async Task<IActionResult> getDashboardSummary()
+        {
+            try
+            {
+                OcrDashboardSummaryDto response = await _dashboardService.getSummaryAsync();
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to load OCR dashboard summary.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [HttpGet("dashboard/offices/{officeCode}")]
+        public async Task<IActionResult> getOfficeDashboard(string officeCode)
+        {
+            try
+            {
+                OcrOfficeDashboardDto response = await _dashboardService.getOfficeSummaryAsync(officeCode);
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to load OCR office dashboard.",
+                    error = ex.Message
+                });
+            }
         }
     }
 }
