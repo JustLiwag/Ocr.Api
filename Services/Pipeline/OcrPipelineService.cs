@@ -46,7 +46,13 @@ namespace Ocr.Api.Services.Pipeline
             if (files == null || files.Count == 0)
                 throw new Exception("No files uploaded.");
 
-            var rootDir = @"C:\Users\emedeleon\Downloads\OCR Test Data\results";
+            string rootDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Downloads",
+                "OCR Test Data",
+                "results"
+            );
+
             Directory.CreateDirectory(rootDir);
 
             var jobId = Guid.NewGuid().ToString();

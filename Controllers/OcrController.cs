@@ -107,7 +107,13 @@ namespace Ocr.Api.Controllers
 
         private async Task<object> ProcessSingleFileAsync(IFormFile file)
         {
-            var rootDir = @"C:\Users\emedeleon\Downloads\OCR Test Data\results";
+            string rootDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Downloads",
+                "OCR Test Data",
+                "results"
+            );
+
 
             var originalName = Path.GetFileNameWithoutExtension(file.FileName);
             var safeName = string.Concat(originalName.Split(Path.GetInvalidFileNameChars()));
