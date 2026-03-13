@@ -1,9 +1,10 @@
 using Ocr.Api.Services;
 using Ocr.Api.Services.FileStorage;
+using Ocr.Api.Services.ImageProcessing;
 using Ocr.Api.Services.Ocr;
 using Ocr.Api.Services.Pdf;
+using Ocr.Api.Services.Pipeline;
 using Ocr.Api.Services.Rendering;
-using Ocr.Api.Services.ImageProcessing;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,6 +21,7 @@ builder.Services.AddScoped<IPdfTextDetector, PdfPigTextDetector>();
 builder.Services.AddScoped<IPdfRenderService, GhostscriptRenderService>();
 builder.Services.AddScoped<ITesseractService, TesseractService>();
 builder.Services.AddScoped<IImagePreprocessingService, ImagePreprocessingService>();
+builder.Services.AddScoped<IOcrPipelineService, OcrPipelineService>();
 
 // PDF Merge Service
 builder.Services.AddScoped<IPdfMergeService, GhostscriptMergeService>();

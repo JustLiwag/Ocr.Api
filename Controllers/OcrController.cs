@@ -1,13 +1,15 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Ocr.Api.Services.FileStorage;
-using Ocr.Api.Services.Pdf;
-using Ocr.Api.Services.Rendering;
-using Ocr.Api.Services.Ocr;
 using Ocr.Api.Services.ImageProcessing;
+using Ocr.Api.Services.Ocr;
+using Ocr.Api.Services.Pdf;
+using Ocr.Api.Services.Pipeline;
+using Ocr.Api.Services.Rendering;
 using System.Collections.Generic;
-using System.Threading.Tasks;
 using System.Linq;
+using System.Threading.Tasks;
+using System;
 
 namespace Ocr.Api.Controllers
 {
@@ -22,6 +24,7 @@ namespace Ocr.Api.Controllers
         private readonly IPdfMergeService _pdfMergeService;
         private readonly IImagePreprocessingService _imagePreprocessingService;
         private readonly IConfiguration _config;
+        private readonly IOcrPipelineService _ocrPipelineService;
 
         public OcrController(
             ITempFileService tempFileService,
@@ -30,7 +33,8 @@ namespace Ocr.Api.Controllers
             ITesseractService tesseractService,
             IPdfMergeService pdfMergeService,
             IImagePreprocessingService imagePreprocessingService,
-            IConfiguration config)
+            IConfiguration config,
+            IOcrPipelineService ocrPipelineService)
         {
             _tempFileService = tempFileService;
             _pdfTextDetector = pdfTextDetector;
@@ -39,6 +43,7 @@ namespace Ocr.Api.Controllers
             _pdfMergeService = pdfMergeService;
             _imagePreprocessingService = imagePreprocessingService;
             _config = config;
+            _ocrPipelineService = ocrPipelineService;
         }
 
         // Single File OCR
@@ -85,6 +90,19 @@ namespace Ocr.Api.Controllers
                 Processed = results.Count,
                 Results = results
             });
+        }
+
+        // 🔵 NEW ENDPOINT: Merge searchable + non-searchable files
+        [HttpPost("merge-searchable")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> MergeSearchable(List<IFormFile> files)
+        {
+            if (files == null || files.Count == 0)
+                return BadRequest("No files uploaded.");
+
+            var result = await _ocrPipelineService.MergeSearchableAsync(files);
+
+            return Ok(result);
         }
 
         private async Task<object> ProcessSingleFileAsync(IFormFile file)
@@ -155,7 +173,6 @@ namespace Ocr.Api.Controllers
                 ? confidences.Average()
                 : 0;
 
-            // 🔥 Determine OCR quality
             string quality;
 
             if (overallConfidence >= 90)
@@ -167,11 +184,9 @@ namespace Ocr.Api.Controllers
             else
                 quality = "Poor";
 
-            // 🔥 Create quality folder
             var qualityDir = Path.Combine(rootDir, quality);
             Directory.CreateDirectory(qualityDir);
 
-            // 🔥 Move final PDF to that folder
             var finalPdfPath = Path.Combine(qualityDir, Path.GetFileName(mergedPdf));
 
             System.IO.File.Move(mergedPdf, finalPdfPath, true);
@@ -198,14 +213,14 @@ namespace Ocr.Api.Controllers
         {
             var mergedFileName = Path.GetFileName(mergedPdfPath);
 
-            var directoriesToCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var directoriesToCheck = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
 
             foreach (var file in imageFiles.Concat(pagePdfFiles))
             {
                 try
                 {
                     if (Path.GetFileName(file)
-                        .Equals(mergedFileName, StringComparison.OrdinalIgnoreCase))
+                        .Equals(mergedFileName, System.StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     if (System.IO.File.Exists(file))
