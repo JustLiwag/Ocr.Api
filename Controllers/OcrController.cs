@@ -11,6 +11,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using System;
 
+using System.Diagnostics;
+
 namespace Ocr.Api.Controllers
 {
     [ApiController]
@@ -63,6 +65,7 @@ namespace Ocr.Api.Controllers
             if (files == null || files.Count == 0)
                 return BadRequest("No files uploaded.");
 
+            var batchStopwatch = Stopwatch.StartNew();
             var results = new List<object>();
 
             foreach (var file in files)
@@ -84,10 +87,13 @@ namespace Ocr.Api.Controllers
                 }
             }
 
+            batchStopwatch.Stop();
+
             return Ok(new
             {
                 TotalFiles = files.Count,
                 Processed = results.Count,
+                TotalElapsed = batchStopwatch.Elapsed.ToString(@"hh\:mm\:ss"),
                 Results = results
             });
         }
@@ -107,13 +113,14 @@ namespace Ocr.Api.Controllers
 
         private async Task<object> ProcessSingleFileAsync(IFormFile file)
         {
+            var stopwatch = Stopwatch.StartNew();
+
             string rootDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 "Downloads",
                 "OCR Test Data",
                 "results"
             );
-
 
             var originalName = Path.GetFileNameWithoutExtension(file.FileName);
             var safeName = string.Concat(originalName.Split(Path.GetInvalidFileNameChars()));
@@ -133,11 +140,14 @@ namespace Ocr.Api.Controllers
             {
                 if (_pdfTextDetector.HasText(inputPath))
                 {
+                    stopwatch.Stop();
+
                     return new
                     {
                         File = file.FileName,
                         Status = "Already searchable",
-                        OutputPdf = inputPath
+                        OutputPdf = inputPath,
+                        TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
                     };
                 }
 
@@ -202,13 +212,16 @@ namespace Ocr.Api.Controllers
                 CleanupIntermediateFiles(images.Concat(processedImages), pagePdfs, finalPdfPath);
             }
 
+            stopwatch.Stop();
+
             return new
             {
                 File = file.FileName,
                 Pages = pagePdfs.Count,
                 OcrConfidence = Math.Round(overallConfidence, 2),
                 Quality = quality,
-                OutputPdf = finalPdfPath
+                OutputPdf = finalPdfPath,
+                TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
             };
         }
 
