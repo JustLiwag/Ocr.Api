@@ -166,11 +166,11 @@ namespace Ocr.Api.Controllers
 
             foreach (var image in images)
             {
-                var processedImage = _imagePreprocessingService.Preprocess(image);
-                processedImages.Add(processedImage);
+                //var processedImage = _imagePreprocessingService.Preprocess(image);
+                //processedImages.Add(processedImage);
 
                 var ocrResult = await _tesseractService.RunOcrAsync(
-                    processedImage,
+                    image,
                     "eng+osd",
                     tessDataPath
                 );
