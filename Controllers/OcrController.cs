@@ -28,6 +28,7 @@ namespace Ocr.Api.Controllers
         private readonly IImagePreprocessingService _imagePreprocessingService;
         private readonly IConfiguration _config;
         private readonly IOcrPipelineService _ocrPipelineService;
+        private readonly IDocTrService _docTrService;
 
         public OcrController(
             ITempFileService tempFileService,
@@ -37,7 +38,8 @@ namespace Ocr.Api.Controllers
             IPdfMergeService pdfMergeService,
             IImagePreprocessingService imagePreprocessingService,
             IConfiguration config,
-            IOcrPipelineService ocrPipelineService)
+            IOcrPipelineService ocrPipelineService,
+            IDocTrService docTrService)
         {
             _tempFileService = tempFileService;
             _pdfTextDetector = pdfTextDetector;
@@ -47,6 +49,30 @@ namespace Ocr.Api.Controllers
             _imagePreprocessingService = imagePreprocessingService;
             _config = config;
             _ocrPipelineService = ocrPipelineService;
+            _docTrService = docTrService;
+        }
+
+        [HttpPost("doctr-test")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> RunDocTrTest(IFormFile file)
+        {
+            if (file == null || file.Length == 0)
+                return BadRequest("No file uploaded.");
+
+            var tempJobDir = _tempFileService.CreateJobDirectory("doctr_test");
+            var inputPath = await _tempFileService.SaveFileAsync(file, tempJobDir);
+
+            var result = await _docTrService.RunOcrAsync(inputPath);
+
+            return Ok(new
+            {
+                result.Engine,
+                result.ImagePath,
+                result.Confidence,
+                result.FullText,
+                Words = result.Words.Count,
+                result.JsonPath
+            });
         }
 
         [HttpPost("manual")]

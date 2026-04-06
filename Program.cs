@@ -25,6 +25,9 @@ builder.Services.AddScoped<IOcrPipelineService, OcrPipelineService>();
 
 // PDF Merge Service
 builder.Services.AddScoped<IPdfMergeService, GhostscriptMergeService>();
+// docTR service (python)
+builder.Services.AddScoped<IDocTrService, DocTrService>();
+
 
 
 
