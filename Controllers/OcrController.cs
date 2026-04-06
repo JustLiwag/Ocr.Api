@@ -1,17 +1,18 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Ocr.Api.Services.FileStorage;
 using Ocr.Api.Services.ImageProcessing;
 using Ocr.Api.Services.Ocr;
 using Ocr.Api.Services.Pdf;
 using Ocr.Api.Services.Pipeline;
 using Ocr.Api.Services.Rendering;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using System;
-
-using System.Diagnostics;
 
 namespace Ocr.Api.Controllers
 {
@@ -48,7 +49,6 @@ namespace Ocr.Api.Controllers
             _ocrPipelineService = ocrPipelineService;
         }
 
-        // Single File OCR
         [HttpPost("manual")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunManualOcr(IFormFile file)
@@ -57,7 +57,6 @@ namespace Ocr.Api.Controllers
             return Ok(result);
         }
 
-        // Batch File OCR
         [HttpPost("batch")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunBatchOcr(List<IFormFile> files)
@@ -73,7 +72,6 @@ namespace Ocr.Api.Controllers
                 try
                 {
                     var result = await ProcessSingleFileAsync(file);
-
                     results.Add(result);
                 }
                 catch (Exception ex)
@@ -98,7 +96,6 @@ namespace Ocr.Api.Controllers
             });
         }
 
-        // 🔵 NEW ENDPOINT: Merge searchable + non-searchable files
         [HttpPost("merge-searchable")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> MergeSearchable(List<IFormFile> files)
@@ -107,12 +104,25 @@ namespace Ocr.Api.Controllers
                 return BadRequest("No files uploaded.");
 
             var result = await _ocrPipelineService.MergeSearchableAsync(files);
-
             return Ok(result);
+        }
+
+        private static int GetRenderDpi(int pageCount)
+        {
+            if (pageCount <= 20)
+                return 400;
+
+            if (pageCount <= 75)
+                return 300;
+
+            return 250;
         }
 
         private async Task<object> ProcessSingleFileAsync(IFormFile file)
         {
+            if (file == null || file.Length == 0)
+                throw new ArgumentException("Invalid file.");
+
             var stopwatch = Stopwatch.StartNew();
 
             string rootDir = Path.Combine(
@@ -122,23 +132,30 @@ namespace Ocr.Api.Controllers
                 "results"
             );
 
+            Directory.CreateDirectory(rootDir);
+
             var originalName = Path.GetFileNameWithoutExtension(file.FileName);
             var safeName = string.Concat(originalName.Split(Path.GetInvalidFileNameChars()));
 
-            var jobDir = Path.Combine(rootDir, safeName);
-            Directory.CreateDirectory(jobDir);
+            var outputJobDir = Path.Combine(rootDir, safeName);
+            Directory.CreateDirectory(outputJobDir);
 
-            var inputPath = await _tempFileService.SaveFileAsync(file);
+            var tempJobDir = _tempFileService.CreateJobDirectory(safeName);
+            var inputPath = await _tempFileService.SaveFileAsync(file, tempJobDir);
 
-            var images = new List<string>();
+            bool cleanupTemps = _config.GetValue<bool>("Ocr:CleanupIntermediateFiles");
+            bool useBest = _config.GetValue<bool>("Ocr:UseBest");
+            int defaultDpi = _config.GetValue<int?>("Ocr:RenderDpi") ?? 300;
+            int largeFilePageThreshold = _config.GetValue<int?>("Ocr:LargeFilePageThreshold") ?? 50;
+            int chunkSize = _config.GetValue<int?>("Ocr:MergeChunkSize") ?? 25;
 
-            if (IsImageFile(file.FileName))
+            var pagePdfs = new List<string>();
+            var confidences = new List<float>();
+            int pagesProcessed = 0;
+
+            try
             {
-                images.Add(inputPath);
-            }
-            else
-            {
-                if (_pdfTextDetector.HasText(inputPath))
+                if (!IsImageFile(file.FileName) && _pdfTextDetector.HasText(inputPath))
                 {
                     stopwatch.Stop();
 
@@ -151,127 +168,210 @@ namespace Ocr.Api.Controllers
                     };
                 }
 
-                images = (await _renderService.RenderAsync(inputPath, jobDir, 400)).ToList();
+                string tessDataPath = useBest
+                    ? _config["Tesseract:Best"]
+                    : _config["Tesseract:Fast"];
+
+                if (string.IsNullOrWhiteSpace(tessDataPath))
+                    throw new InvalidOperationException("Tesseract tessdata path is not configured.");
+
+                if (IsImageFile(file.FileName))
+                {
+                    var ocrResult = await ProcessPageImageAsync(
+                        sourceImagePath: inputPath,
+                        pageNumber: 1,
+                        outputJobDir: outputJobDir,
+                        tessDataPath: tessDataPath,
+                        cleanupTemps: cleanupTemps,
+                        preprocessingOptions: BuildPreprocessingOptions(1, false)
+                    );
+
+                    pagePdfs.Add(ocrResult.PdfPath);
+                    confidences.Add(ocrResult.Confidence);
+                    pagesProcessed = 1;
+                }
+                else
+                {
+                    int pageCount = await _renderService.GetPageCountAsync(inputPath);
+                    int renderDpi = GetRenderDpi(pageCount);
+                    bool largeDocument = pageCount > 75;
+
+                    for (int pageNumber = 1; pageNumber <= pageCount; pageNumber++)
+                    {
+                        string renderedImagePath = await _renderService.RenderPageAsync(
+                            inputPath,
+                            tempJobDir,
+                            pageNumber,
+                            renderDpi
+                        );
+
+                        var ocrResult = await ProcessPageImageAsync(
+                            sourceImagePath: renderedImagePath,
+                            pageNumber: pageNumber,
+                            outputJobDir: outputJobDir,
+                            tessDataPath: tessDataPath,
+                            cleanupTemps: cleanupTemps,
+                            preprocessingOptions: BuildPreprocessingOptions(pageCount, largeDocument)
+                        );
+
+                        pagePdfs.Add(ocrResult.PdfPath);
+                        confidences.Add(ocrResult.Confidence);
+                        pagesProcessed++;
+
+                        if (cleanupTemps)
+                            _tempFileService.DeleteFileIfExists(renderedImagePath);
+                    }
+                }
+
+                string mergedPdf;
+
+                if (pagePdfs.Count == 0)
+                    throw new InvalidOperationException("No OCR page PDFs were generated.");
+
+                if (pagePdfs.Count > chunkSize)
+                {
+                    mergedPdf = await _pdfMergeService.MergeInChunksAsync(
+                        pagePdfs,
+                        outputJobDir,
+                        safeName,
+                        chunkSize
+                    );
+                }
+                else
+                {
+                    mergedPdf = await _pdfMergeService.MergeAsync(
+                        pagePdfs,
+                        outputJobDir,
+                        safeName
+                    );
+                }
+
+                float overallConfidence = confidences.Count > 0
+                    ? confidences.Average()
+                    : 0;
+
+                string quality = GetQualityLabel(overallConfidence);
+
+                var qualityDir = Path.Combine(rootDir, quality);
+                Directory.CreateDirectory(qualityDir);
+
+                var finalPdfPath = Path.Combine(qualityDir, Path.GetFileName(mergedPdf));
+                System.IO.File.Move(mergedPdf, finalPdfPath, true);
+
+                if (cleanupTemps)
+                {
+                    foreach (var pagePdf in pagePdfs)
+                        _tempFileService.DeleteFileIfExists(pagePdf);
+
+                    _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
+                }
+
+                stopwatch.Stop();
+
+                return new
+                {
+                    File = file.FileName,
+                    Pages = pagesProcessed,
+                    OcrConfidence = Math.Round(overallConfidence, 2),
+                    Quality = quality,
+                    OutputPdf = finalPdfPath,
+                    TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
+                };
             }
-
-            bool useBest = _config.GetValue<bool>("Ocr:UseBest");
-
-            var tessDataPath = useBest
-                ? _config["Tesseract:Best"]
-                : _config["Tesseract:Fast"];
-
-            var pagePdfs = new List<string>();
-            var confidences = new List<float>();
-            var processedImages = new List<string>();
-
-            foreach (var image in images)
+            catch
             {
-                var processedImage = _imagePreprocessingService.Preprocess(image);
-                processedImages.Add(processedImage);
+                if (cleanupTemps)
+                    _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
 
-                var ocrResult = await _tesseractService.RunOcrAsync(
-                    processedImage,
-                    "eng+osd",
-                    tessDataPath
-                );
-
-                pagePdfs.Add(ocrResult.PdfPath);
-                confidences.Add(ocrResult.Confidence);
+                throw;
             }
+        }
 
-            var mergedPdf = await _pdfMergeService.MergeAsync(
-                pagePdfs,
-                jobDir,
-                safeName
+        private async Task<Ocr.Api.Models.OcrResult> ProcessPageImageAsync(
+            string sourceImagePath,
+            int pageNumber,
+            string outputJobDir,
+            string tessDataPath,
+            bool cleanupTemps,
+            ImagePreprocessingOptions preprocessingOptions)
+        {
+            string pageWorkDir = Path.Combine(outputJobDir, $"page_{pageNumber:000}");
+            Directory.CreateDirectory(pageWorkDir);
+
+            string pageImagePath = CopyImageToPageWorkDir(sourceImagePath, pageWorkDir, pageNumber);
+
+            string processedImagePath = _imagePreprocessingService.Preprocess(pageImagePath, preprocessingOptions);
+
+            var ocrResult = await _tesseractService.RunOcrAsync(
+                processedImagePath,
+                "eng+osd",
+                tessDataPath
             );
 
-            var overallConfidence = confidences.Count > 0
-                ? confidences.Average()
-                : 0;
-
-            string quality;
-
-            if (overallConfidence >= 90)
-                quality = "Excellent";
-            else if (overallConfidence >= 75)
-                quality = "Good";
-            else if (overallConfidence >= 50)
-                quality = "Fair";
-            else
-                quality = "Poor";
-
-            var qualityDir = Path.Combine(rootDir, quality);
-            Directory.CreateDirectory(qualityDir);
-
-            var finalPdfPath = Path.Combine(qualityDir, Path.GetFileName(mergedPdf));
-
-            System.IO.File.Move(mergedPdf, finalPdfPath, true);
-
-            if (_config.GetValue<bool>("Ocr:CleanupIntermediateFiles"))
+            if (cleanupTemps)
             {
-                CleanupIntermediateFiles(images.Concat(processedImages), pagePdfs, finalPdfPath);
+                if (!string.Equals(pageImagePath, sourceImagePath, StringComparison.OrdinalIgnoreCase))
+                    _tempFileService.DeleteFileIfExists(pageImagePath);
+
+                if (!string.Equals(processedImagePath, pageImagePath, StringComparison.OrdinalIgnoreCase))
+                    _tempFileService.DeleteFileIfExists(processedImagePath);
+
+                _tempFileService.DeleteFileIfExists(ocrResult.TextPath);
+                _tempFileService.DeleteFileIfExists(ocrResult.TsvPath);
             }
 
-            stopwatch.Stop();
+            return ocrResult;
+        }
 
-            return new
+        private ImagePreprocessingOptions BuildPreprocessingOptions(int pageCount, bool largeDocument)
+        {
+            if (largeDocument)
             {
-                File = file.FileName,
-                Pages = pagePdfs.Count,
-                OcrConfidence = Math.Round(overallConfidence, 2),
-                Quality = quality,
-                OutputPdf = finalPdfPath,
-                TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
+                return new ImagePreprocessingOptions
+                {
+                    Enabled = true,
+                    Profile = "light",
+                    OverwriteIfExists = true
+                };
+            }
+
+            return new ImagePreprocessingOptions
+            {
+                Enabled = true,
+                Profile = "default",
+                OverwriteIfExists = true
             };
         }
 
-        private void CleanupIntermediateFiles(
-            IEnumerable<string> imageFiles,
-            IEnumerable<string> pagePdfFiles,
-            string mergedPdfPath)
+        private static string CopyImageToPageWorkDir(string sourceImagePath, string pageWorkDir, int pageNumber)
         {
-            var mergedFileName = Path.GetFileName(mergedPdfPath);
+            string extension = Path.GetExtension(sourceImagePath);
+            string targetPath = Path.Combine(pageWorkDir, $"page-{pageNumber:000}{extension}");
 
-            var directoriesToCheck = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            if (!string.Equals(sourceImagePath, targetPath, StringComparison.OrdinalIgnoreCase))
+                System.IO.File.Copy(sourceImagePath, targetPath, true);
 
-            foreach (var file in imageFiles.Concat(pagePdfFiles))
-            {
-                try
-                {
-                    if (Path.GetFileName(file)
-                        .Equals(mergedFileName, System.StringComparison.OrdinalIgnoreCase))
-                        continue;
+            return targetPath;
+        }
 
-                    if (System.IO.File.Exists(file))
-                    {
-                        directoriesToCheck.Add(Path.GetDirectoryName(file)!);
-                        System.IO.File.Delete(file);
-                    }
-                }
-                catch
-                {
-                }
-            }
+        private static string GetQualityLabel(float overallConfidence)
+        {
+            if (overallConfidence >= 90)
+                return "Excellent";
 
-            foreach (var dir in directoriesToCheck)
-            {
-                try
-                {
-                    if (Directory.Exists(dir) &&
-                        !Directory.EnumerateFileSystemEntries(dir).Any())
-                    {
-                        Directory.Delete(dir);
-                    }
-                }
-                catch
-                {
-                }
-            }
+            if (overallConfidence >= 75)
+                return "Good";
+
+            if (overallConfidence >= 50)
+                return "Fair";
+
+            return "Poor";
         }
 
         private static bool IsImageFile(string fileName)
         {
             var ext = Path.GetExtension(fileName).ToLowerInvariant();
+
             return ext == ".png" ||
                    ext == ".jpg" ||
                    ext == ".jpeg" ||

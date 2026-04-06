@@ -119,7 +119,9 @@ namespace Ocr.Api.Services.Ocr
             return new OcrResult
             {
                 PdfPath = pdfPath,
-                Confidence = confidence
+                Confidence = confidence,
+                TextPath = File.Exists(outputBase + ".txt") ? outputBase + ".txt" : null,
+                TsvPath = File.Exists(tsvPath) ? tsvPath : null
             };
         }
     }
