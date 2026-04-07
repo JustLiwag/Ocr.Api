@@ -31,6 +31,7 @@ namespace Ocr.Api.Controllers
         // docTR service for testing and comparison
         private readonly IDocTrService _docTrService;
         private readonly ISearchablePdfBuilderService _searchablePdfBuilderService;
+        private readonly IDocTrPersistenceService _docTrPersistenceService;
 
         public OcrController(
             ITempFileService tempFileService,
@@ -42,7 +43,8 @@ namespace Ocr.Api.Controllers
             IConfiguration config,
             IOcrPipelineService ocrPipelineService,
             IDocTrService docTrService,
-            ISearchablePdfBuilderService searchablePdfBuilderService)
+            ISearchablePdfBuilderService searchablePdfBuilderService,
+            IDocTrPersistenceService docTrPersistenceService)
         {
             _tempFileService = tempFileService;
             _pdfTextDetector = pdfTextDetector;
@@ -54,12 +56,14 @@ namespace Ocr.Api.Controllers
             _ocrPipelineService = ocrPipelineService;
             _docTrService = docTrService;
             _searchablePdfBuilderService = searchablePdfBuilderService;
+            _docTrPersistenceService = docTrPersistenceService;
         }
 
         [HttpPost("doctr-build-page")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunDocTrBuildPage(IFormFile file)
         {
+
             if (file == null || file.Length == 0)
                 return BadRequest("No file uploaded.");
 
@@ -106,6 +110,136 @@ namespace Ocr.Api.Controllers
                 doctrResult.JsonPath,
                 OutputPdf = builtPdf
             });
+        }
+
+        [HttpPost("doctr-build-pdf-page")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> RunDocTrBuildPdfPage(IFormFile file, int pageNumber = 1)
+        {
+            var stopwatch = Stopwatch.StartNew();
+
+            if (file == null || file.Length == 0)
+                return BadRequest("No file uploaded.");
+
+            if (!Path.GetExtension(file.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
+                return BadRequest("Please upload a PDF file.");
+
+            if (pageNumber <= 0)
+                return BadRequest("Page number must be greater than zero.");
+
+            string rootDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Downloads",
+                "OCR Test Data",
+                "results",
+                "doctr_pdf_test"
+            );
+
+            Directory.CreateDirectory(rootDir);
+
+            var safeName = string.Concat(
+                Path.GetFileNameWithoutExtension(file.FileName)
+                    .Split(Path.GetInvalidFileNameChars())
+            );
+
+            var tempJobDir = _tempFileService.CreateJobDirectory("doctr_build_pdf_page");
+            var inputPath = await _tempFileService.SaveFileAsync(file, tempJobDir);
+
+            try
+            {
+                int pageCount = await _renderService.GetPageCountAsync(inputPath);
+
+                if (pageNumber > pageCount)
+                    return BadRequest($"Requested page {pageNumber} exceeds PDF page count of {pageCount}.");
+
+                int renderDpi = GetRenderDpi(pageCount);
+
+                string renderedImagePath = await _renderService.RenderPageAsync(
+                    inputPath,
+                    tempJobDir,
+                    pageNumber,
+                    renderDpi
+                );
+
+                var preprocessingOptions = new ImagePreprocessingOptions
+                {
+                    Enabled = true,
+                    Profile = pageCount > 75 ? "light" : "default",
+                    OverwriteIfExists = true
+                };
+
+                string processedImagePath = _imagePreprocessingService.Preprocess(
+                    renderedImagePath,
+                    preprocessingOptions
+                );
+
+                var doctrResult = await _docTrService.RunOcrAsync(processedImagePath);
+
+                string documentId = $"{safeName}_{DateTime.Now:yyyyMMddHHmmss}";
+
+                var pageRecord = new Ocr.Api.Models.DocTrPageRecord
+                {
+                    DocumentId = documentId,
+                    PageNumber = pageNumber,
+                    Engine = doctrResult.Engine,
+                    SourceImagePath = string.Empty,
+                    FullText = doctrResult.FullText,
+                    Confidence = doctrResult.Confidence
+                };
+
+                await _docTrPersistenceService.SavePageAsync(pageRecord);
+
+                var wordRecords = doctrResult.Words
+                    .Select((word, index) => new Ocr.Api.Models.DocTrWordRecord
+                    {
+                        DocumentId = documentId,
+                        PageNumber = pageNumber,
+                        WordOrder = index + 1,
+                        RawText = word.Text,
+                        Confidence = word.Confidence,
+                        XMin = word.XMin,
+                        YMin = word.YMin,
+                        XMax = word.XMax,
+                        YMax = word.YMax
+                    })
+                    .ToList();
+
+                await _docTrPersistenceService.SaveWordsAsync(wordRecords);
+
+                var outputPdfPath = Path.Combine(
+                    rootDir,
+                    $"{safeName}_page_{pageNumber:000}_doctr.pdf"
+                );
+
+                var builtPdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
+                    processedImagePath,
+                    doctrResult.Words,
+                    outputPdfPath
+                );
+
+                stopwatch.Stop();
+
+                return Ok(new
+                {
+                    DocumentId = documentId,
+                    File = file.FileName,
+                    PageNumber = pageNumber,
+                    PageCount = pageCount,
+                    RenderDpi = renderDpi,
+                    doctrResult.Engine,
+                    doctrResult.Confidence,
+                    doctrResult.FullText,
+                    WordCount = doctrResult.Words.Count,
+                    OutputPdf = builtPdf,
+                    TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
+                });
+            }
+            finally
+            {
+                bool cleanupTemps = _config.GetValue<bool>("Ocr:CleanupIntermediateFiles");
+                if (cleanupTemps)
+                    _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
+            }
         }
 
         [HttpPost("doctr-test")]

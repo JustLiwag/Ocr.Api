@@ -30,8 +30,10 @@ builder.Services.AddScoped<IOcrPipelineService, OcrPipelineService>();
 builder.Services.AddScoped<IPdfMergeService, GhostscriptMergeService>();
 // docTR service (python)
 builder.Services.AddScoped<IDocTrService, DocTrService>();
+builder.Services.AddScoped<IDocTrPersistenceService, DocTrPersistenceService>();
 // PDF Searchable
 builder.Services.AddScoped<ISearchablePdfBuilderService, PdfSharpSearchablePdfBuilderService>();
+
 
 
 
