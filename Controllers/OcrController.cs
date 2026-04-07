@@ -312,81 +312,285 @@ namespace Ocr.Api.Controllers
             });
         }
 
-        [HttpPost("doctr-rebuild-page")]
-        public async Task<IActionResult> RebuildDocTrPage(string documentId, int pageNumber)
+        [HttpPost("doctr-rebuild-document")]
+        public async Task<IActionResult> RebuildDocTrDocument(string documentId)
         {
             var stopwatch = Stopwatch.StartNew();
 
             if (string.IsNullOrWhiteSpace(documentId))
                 return BadRequest("documentId is required.");
 
-            if (pageNumber <= 0)
-                return BadRequest("pageNumber must be greater than zero.");
-
-            var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
-            if (page == null)
-                return NotFound("Page record not found.");
-
-            var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
-            if (words == null || words.Count == 0)
-                return NotFound("No persisted words found for the specified page.");
-
-            if (string.IsNullOrWhiteSpace(page.SourceImagePath) || !System.IO.File.Exists(page.SourceImagePath))
-                return NotFound("Source page image not found for rebuild.");
-
             string rootDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 "Downloads",
                 "OCR Test Data",
                 "results",
-                "doctr_rebuild"
+                "doctr_rebuild_document"
             );
 
             Directory.CreateDirectory(rootDir);
 
-            var wordsForPdf = words
-                .OrderBy(w => w.WordOrder)
-                .Select(w => new Ocr.Api.Models.DocTrWordResult
+            string documentOutputDir = Path.Combine(rootDir, documentId);
+            Directory.CreateDirectory(documentOutputDir);
+
+            var rebuiltPagePdfPaths = new List<string>();
+            var confidenceScores = new List<float>();
+            int pageNumber = 1;
+
+            while (true)
+            {
+                var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
+                if (page == null)
+                    break;
+
+                var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
+                if (words.Count == 0)
                 {
-                    Text = w.FinalText,
-                    Confidence = w.Confidence,
-                    XMin = w.XMin,
-                    YMin = w.YMin,
-                    XMax = w.XMax,
-                    YMax = w.YMax
-                })
-                .ToList();
+                    pageNumber++;
+                    continue;
+                }
 
-            var outputPdfPath = Path.Combine(
-                rootDir,
-                $"{documentId}_page_{pageNumber:000}_rebuilt.pdf"
-            );
+                if (string.IsNullOrWhiteSpace(page.SourceImagePath) || !System.IO.File.Exists(page.SourceImagePath))
+                    return NotFound($"Source image not found for page {pageNumber}.");
 
-            var rebuiltPdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
-                page.SourceImagePath,
-                wordsForPdf,
-                outputPdfPath
-            );
+                var wordsForPdf = words
+                    .OrderBy(w => w.WordOrder)
+                    .Select(w => new Ocr.Api.Models.DocTrWordResult
+                    {
+                        Text = w.FinalText,
+                        Confidence = w.Confidence,
+                        XMin = w.XMin,
+                        YMin = w.YMin,
+                        XMax = w.XMax,
+                        YMax = w.YMax
+                    })
+                    .ToList();
 
-            float averageConfidence = words.Count > 0
-                ? words.Average(w => w.Confidence) * 100f
+                string pagePdfPath = Path.Combine(
+                    documentOutputDir,
+                    $"{documentId}_page_{pageNumber:000}_rebuilt.pdf"
+                );
+
+                var rebuiltPagePdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
+                    page.SourceImagePath,
+                    wordsForPdf,
+                    pagePdfPath
+                );
+
+                rebuiltPagePdfPaths.Add(rebuiltPagePdf);
+
+                float pageConfidence = words.Count > 0
+                    ? words.Average(w => w.Confidence) * 100f
+                    : 0f;
+
+                confidenceScores.Add(pageConfidence);
+
+                pageNumber++;
+            }
+
+            if (rebuiltPagePdfPaths.Count == 0)
+                return NotFound("No persisted pages found for the specified document.");
+
+            int totalPages = rebuiltPagePdfPaths.Count;
+            int chunkSize = _config.GetValue<int?>("Ocr:MergeChunkSize") ?? 25;
+
+            string mergedPdf = totalPages > chunkSize
+                ? await _pdfMergeService.MergeInChunksAsync(rebuiltPagePdfPaths, documentOutputDir, $"{documentId}_rebuilt", chunkSize)
+                : await _pdfMergeService.MergeAsync(rebuiltPagePdfPaths, documentOutputDir, $"{documentId}_rebuilt");
+
+            float overallConfidence = confidenceScores.Count > 0
+                ? confidenceScores.Average()
                 : 0f;
 
-            string quality = GetQualityLabel(averageConfidence);
+            string quality = GetQualityLabel(overallConfidence);
+
+            int correctedWords = 0;
+            int totalWords = 0;
+
+            for (int i = 1; i <= totalPages; i++)
+            {
+                var pageWords = await _docTrPersistenceService.GetWordsAsync(documentId, i);
+                totalWords += pageWords.Count;
+                correctedWords += pageWords.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText));
+            }
 
             stopwatch.Stop();
 
             return Ok(new
             {
                 DocumentId = documentId,
-                PageNumber = pageNumber,
-                WordCount = words.Count,
-                CorrectedWords = words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText)),
-                OcrConfidence = Math.Round(averageConfidence, 2),
+                Pages = totalPages,
+                WordCount = totalWords,
+                CorrectedWords = correctedWords,
+                OcrConfidence = Math.Round(overallConfidence, 2),
                 Quality = quality,
-                OutputPdf = rebuiltPdf,
+                OutputPdf = mergedPdf,
                 TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
             });
+        }
+
+        [HttpPost("doctr-build-document")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> RunDocTrBuildDocument(IFormFile file)
+        {
+            var stopwatch = Stopwatch.StartNew();
+
+            if (file == null || file.Length == 0)
+                return BadRequest("No file uploaded.");
+
+            if (!Path.GetExtension(file.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
+                return BadRequest("Please upload a PDF file.");
+
+            string rootDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Downloads",
+                "OCR Test Data",
+                "results",
+                "doctr_document"
+            );
+
+            Directory.CreateDirectory(rootDir);
+
+            var safeName = string.Concat(
+                Path.GetFileNameWithoutExtension(file.FileName)
+                    .Split(Path.GetInvalidFileNameChars())
+            );
+
+            string documentId = $"{safeName}_{DateTime.Now:yyyyMMddHHmmss}";
+            string documentOutputDir = Path.Combine(rootDir, documentId);
+            string pageImageDir = Path.Combine(documentOutputDir, "page_images");
+            string pagePdfDir = Path.Combine(documentOutputDir, "page_pdfs");
+
+            Directory.CreateDirectory(documentOutputDir);
+            Directory.CreateDirectory(pageImageDir);
+            Directory.CreateDirectory(pagePdfDir);
+
+            var tempJobDir = _tempFileService.CreateJobDirectory("doctr_build_document");
+            var inputPath = await _tempFileService.SaveFileAsync(file, tempJobDir);
+
+            var pagePdfPaths = new List<string>();
+            var pageConfidenceScores = new List<float>();
+
+            try
+            {
+                int pageCount = await _renderService.GetPageCountAsync(inputPath);
+                int renderDpi = GetRenderDpi(pageCount);
+                bool largeDocument = pageCount > 75;
+
+                for (int pageNumber = 1; pageNumber <= pageCount; pageNumber++)
+                {
+                    string renderedImagePath = await _renderService.RenderPageAsync(
+                        inputPath,
+                        tempJobDir,
+                        pageNumber,
+                        renderDpi
+                    );
+
+                    var preprocessingOptions = new ImagePreprocessingOptions
+                    {
+                        Enabled = true,
+                        Profile = largeDocument ? "light" : "default",
+                        OverwriteIfExists = true
+                    };
+
+                    string processedImagePath = _imagePreprocessingService.Preprocess(
+                        renderedImagePath,
+                        preprocessingOptions
+                    );
+
+                    var doctrResult = await _docTrService.RunOcrAsync(processedImagePath);
+
+                    string savedPageImagePath = Path.Combine(
+                        pageImageDir,
+                        $"page_{pageNumber:000}{Path.GetExtension(processedImagePath)}"
+                    );
+
+                    System.IO.File.Copy(processedImagePath, savedPageImagePath, true);
+
+                    var pageRecord = new Ocr.Api.Models.DocTrPageRecord
+                    {
+                        DocumentId = documentId,
+                        PageNumber = pageNumber,
+                        Engine = doctrResult.Engine,
+                        SourceImagePath = savedPageImagePath,
+                        FullText = doctrResult.FullText,
+                        Confidence = doctrResult.Confidence
+                    };
+
+                    await _docTrPersistenceService.SavePageAsync(pageRecord);
+
+                    var wordRecords = doctrResult.Words
+                        .Select((word, index) => new Ocr.Api.Models.DocTrWordRecord
+                        {
+                            DocumentId = documentId,
+                            PageNumber = pageNumber,
+                            WordOrder = index + 1,
+                            RawText = word.Text,
+                            Confidence = word.Confidence,
+                            XMin = word.XMin,
+                            YMin = word.YMin,
+                            XMax = word.XMax,
+                            YMax = word.YMax
+                        })
+                        .ToList();
+
+                    await _docTrPersistenceService.SaveWordsAsync(wordRecords);
+
+                    var pagePdfPath = Path.Combine(
+                        pagePdfDir,
+                        $"{documentId}_page_{pageNumber:000}.pdf"
+                    );
+
+                    var builtPagePdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
+                        savedPageImagePath,
+                        doctrResult.Words,
+                        pagePdfPath
+                    );
+
+                    pagePdfPaths.Add(builtPagePdf);
+
+                    float pageConfidence = doctrResult.Words.Count > 0
+                        ? doctrResult.Words.Average(w => w.Confidence) * 100f
+                        : doctrResult.Confidence * 100f;
+
+                    pageConfidenceScores.Add(pageConfidence);
+                }
+
+                if (pagePdfPaths.Count == 0)
+                    throw new InvalidOperationException("No page PDFs were generated.");
+
+                int chunkSize = _config.GetValue<int?>("Ocr:MergeChunkSize") ?? 25;
+
+                string mergedPdf = pagePdfPaths.Count > chunkSize
+                    ? await _pdfMergeService.MergeInChunksAsync(pagePdfPaths, documentOutputDir, documentId, chunkSize)
+                    : await _pdfMergeService.MergeAsync(pagePdfPaths, documentOutputDir, documentId);
+
+                float overallConfidence = pageConfidenceScores.Count > 0
+                    ? pageConfidenceScores.Average()
+                    : 0f;
+
+                string quality = GetQualityLabel(overallConfidence);
+
+                stopwatch.Stop();
+
+                return Ok(new
+                {
+                    DocumentId = documentId,
+                    File = file.FileName,
+                    Pages = pageCount,
+                    RenderDpi = renderDpi,
+                    OcrConfidence = Math.Round(overallConfidence, 2),
+                    Quality = quality,
+                    OutputPdf = mergedPdf,
+                    TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
+                });
+            }
+            finally
+            {
+                bool cleanupTemps = _config.GetValue<bool>("Ocr:CleanupIntermediateFiles");
+                if (cleanupTemps)
+                    _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
+            }
         }
 
         [HttpPost("doctr-test")]

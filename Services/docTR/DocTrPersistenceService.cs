@@ -133,5 +133,26 @@ namespace Ocr.Api.Services.Ocr
                 $"page_{pageNumber:000}_words.json"
             );
         }
+
+        public Task<List<int>> GetPageNumbersAsync(string documentId)
+        {
+            string docDir = GetDocumentDirectory(documentId);
+
+            if (!Directory.Exists(docDir))
+                return Task.FromResult(new List<int>());
+
+            var pageNumbers = Directory.GetFiles(docDir, "page_*_page.json")
+                .Select(Path.GetFileNameWithoutExtension)
+                .Select(name =>
+                {
+                    var parts = name!.Split('_');
+                    return int.TryParse(parts[1], out var pageNo) ? pageNo : -1;
+                })
+                .Where(n => n > 0)
+                .OrderBy(n => n)
+                .ToList();
+
+            return Task.FromResult(pageNumbers);
+        }
     }
 }
