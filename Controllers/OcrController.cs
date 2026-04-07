@@ -227,6 +227,12 @@ namespace Ocr.Api.Controllers
                     outputPdfPath
                 );
 
+                float averageConfidence = doctrResult.Words.Count > 0
+                ? doctrResult.Words.Average(w => w.Confidence) * 100f
+                : doctrResult.Confidence * 100f;
+
+                string quality = GetQualityLabel(averageConfidence);
+
                 stopwatch.Stop();
 
                 return Ok(new
@@ -242,6 +248,8 @@ namespace Ocr.Api.Controllers
                     WordCount = doctrResult.Words.Count,
                     SourceImagePath = savedPageImagePath,
                     OutputPdf = builtPdf,
+                    OcrConfidence = Math.Round(averageConfidence, 2),
+                    Quality = quality,
                     TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
                 });
             }
@@ -251,6 +259,57 @@ namespace Ocr.Api.Controllers
                 if (cleanupTemps)
                     _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
             }
+        }
+
+        [HttpGet("doctr-page")]
+        public async Task<IActionResult> GetDocTrPage(string documentId, int pageNumber)
+        {
+            if (string.IsNullOrWhiteSpace(documentId))
+                return BadRequest("documentId is required.");
+
+            if (pageNumber <= 0)
+                return BadRequest("pageNumber must be greater than zero.");
+
+            var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
+            if (page == null)
+                return NotFound("Page record not found.");
+
+            var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
+
+            return Ok(new
+            {
+                Page = page,
+                Words = words
+            });
+        }
+
+        [HttpPost("doctr-corrections")]
+        [Consumes("application/json")]
+        public async Task<IActionResult> SaveDocTrCorrections(
+        [FromQuery] string documentId,
+        [FromQuery] int pageNumber,
+        [FromBody] List<Ocr.Api.Models.DocTrWordCorrectionRequest> corrections)
+        {
+            if (string.IsNullOrWhiteSpace(documentId))
+                return BadRequest("documentId is required.");
+
+            if (pageNumber <= 0)
+                return BadRequest("pageNumber must be greater than zero.");
+
+            if (corrections == null || corrections.Count == 0)
+                return BadRequest("No corrections submitted.");
+
+            await _docTrPersistenceService.SaveCorrectionsAsync(documentId, pageNumber, corrections);
+
+            var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
+
+            return Ok(new
+            {
+                DocumentId = documentId,
+                PageNumber = pageNumber,
+                CorrectedWords = words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText)),
+                Words = words
+            });
         }
 
         [HttpPost("doctr-rebuild-page")]
@@ -309,6 +368,12 @@ namespace Ocr.Api.Controllers
                 outputPdfPath
             );
 
+            float averageConfidence = words.Count > 0
+                ? words.Average(w => w.Confidence) * 100f
+                : 0f;
+
+            string quality = GetQualityLabel(averageConfidence);
+
             stopwatch.Stop();
 
             return Ok(new
@@ -317,59 +382,10 @@ namespace Ocr.Api.Controllers
                 PageNumber = pageNumber,
                 WordCount = words.Count,
                 CorrectedWords = words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText)),
+                OcrConfidence = Math.Round(averageConfidence, 2),
+                Quality = quality,
                 OutputPdf = rebuiltPdf,
                 TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
-            });
-        }
-
-        [HttpGet("doctr-page")]
-        public async Task<IActionResult> GetDocTrPage(string documentId, int pageNumber)
-        {
-            if (string.IsNullOrWhiteSpace(documentId))
-                return BadRequest("documentId is required.");
-
-            if (pageNumber <= 0)
-                return BadRequest("pageNumber must be greater than zero.");
-
-            var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
-            if (page == null)
-                return NotFound("Page record not found.");
-
-            var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
-
-            return Ok(new
-            {
-                Page = page,
-                Words = words
-            });
-        }
-
-        [HttpPost("doctr-corrections")]
-        [Consumes("application/json")]
-        public async Task<IActionResult> SaveDocTrCorrections(
-        [FromQuery] string documentId,
-        [FromQuery] int pageNumber,
-        [FromBody] List<Ocr.Api.Models.DocTrWordCorrectionRequest> corrections)
-        {
-            if (string.IsNullOrWhiteSpace(documentId))
-                return BadRequest("documentId is required.");
-
-            if (pageNumber <= 0)
-                return BadRequest("pageNumber must be greater than zero.");
-
-            if (corrections == null || corrections.Count == 0)
-                return BadRequest("No corrections submitted.");
-
-            await _docTrPersistenceService.SaveCorrectionsAsync(documentId, pageNumber, corrections);
-
-            var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
-
-            return Ok(new
-            {
-                DocumentId = documentId,
-                PageNumber = pageNumber,
-                CorrectedWords = words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText)),
-                Words = words
             });
         }
 
