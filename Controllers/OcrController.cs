@@ -202,7 +202,10 @@ namespace Ocr.Api.Controllers
                     Engine = doctrResult.Engine,
                     SourceImagePath = savedPageImagePath,
                     FullText = doctrResult.FullText,
-                    Confidence = doctrResult.Confidence
+                    Confidence = doctrResult.Confidence,
+                    ReviewStatus = "NotReviewed",
+                    ReviewedBy = null,
+                    ReviewedAt = null
                 };
 
                 await _docTrPersistenceService.SavePageAsync(pageRecord);
@@ -530,7 +533,10 @@ namespace Ocr.Api.Controllers
                         Engine = doctrResult.Engine,
                         SourceImagePath = savedPageImagePath,
                         FullText = doctrResult.FullText,
-                        Confidence = doctrResult.Confidence
+                        Confidence = doctrResult.Confidence,
+                        ReviewStatus = "NotReviewed",
+                        ReviewedBy = null,
+                        ReviewedAt = null
                     };
 
                     await _docTrPersistenceService.SavePageAsync(pageRecord);
@@ -616,7 +622,6 @@ namespace Ocr.Api.Controllers
                 return BadRequest("documentId is required.");
 
             var document = await _docTrPersistenceService.GetDocumentAsync(documentId);
-
             if (document == null)
                 return NotFound("Document record not found.");
 
@@ -630,6 +635,10 @@ namespace Ocr.Api.Controllers
             int correctedWords = 0;
             var confidenceScores = new List<float>();
 
+            int reviewedPages = 0;
+            int needsRecheckPages = 0;
+            int notReviewedPages = 0;
+
             foreach (var pageNumber in pageNumbers)
             {
                 var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
@@ -641,14 +650,14 @@ namespace Ocr.Api.Controllers
                     ? words.Average(w => w.Confidence) * 100f
                     : 0f;
 
-                string reviewStatus;
+                string reviewStatus = page?.ReviewStatus ?? "NotReviewed";
 
-                if (pageCorrectedWords == 0)
-                    reviewStatus = "NotReviewed";
-                else if (pageCorrectedWords < pageWordCount)
-                    reviewStatus = "PartiallyCorrected";
+                if (string.Equals(reviewStatus, "Reviewed", StringComparison.OrdinalIgnoreCase))
+                    reviewedPages++;
+                else if (string.Equals(reviewStatus, "NeedsRecheck", StringComparison.OrdinalIgnoreCase))
+                    needsRecheckPages++;
                 else
-                    reviewStatus = "Corrected";
+                    notReviewedPages++;
 
                 totalWords += pageWordCount;
                 correctedWords += pageCorrectedWords;
@@ -663,6 +672,8 @@ namespace Ocr.Api.Controllers
                     OcrConfidence = Math.Round(pageConfidence, 2),
                     Quality = GetQualityLabel(pageConfidence),
                     ReviewStatus = reviewStatus,
+                    ReviewedBy = page?.ReviewedBy,
+                    ReviewedAt = page?.ReviewedAt,
                     SourceImagePath = page?.SourceImagePath ?? string.Empty
                 });
             }
@@ -673,12 +684,14 @@ namespace Ocr.Api.Controllers
 
             string overallStatus;
 
-            if (correctedWords == 0)
-                overallStatus = "NotReviewed";
-            else if (correctedWords < totalWords)
-                overallStatus = "PartiallyCorrected";
+            if (needsRecheckPages > 0)
+                overallStatus = "NeedsRecheck";
+            else if (reviewedPages == pageNumbers.Count)
+                overallStatus = "Reviewed";
+            else if (reviewedPages > 0)
+                overallStatus = "PartiallyReviewed";
             else
-                overallStatus = "Corrected";
+                overallStatus = "NotReviewed";
 
             return Ok(new
             {
@@ -687,6 +700,9 @@ namespace Ocr.Api.Controllers
                 Engine = document.Engine,
                 DeclaredPageCount = document.PageCount,
                 Pages = pageNumbers.Count,
+                ReviewedPages = reviewedPages,
+                NeedsRecheckPages = needsRecheckPages,
+                NotReviewedPages = notReviewedPages,
                 WordCount = totalWords,
                 CorrectedWords = correctedWords,
                 OcrConfidence = Math.Round(overallConfidence, 2),
@@ -717,6 +733,39 @@ namespace Ocr.Api.Controllers
                 PageNumber = pageNumber,
                 WordOrder = wordOrder,
                 History = history
+            });
+        }
+
+        [HttpPost("doctr-page-review")]
+        [Consumes("application/json")]
+        public async Task<IActionResult> UpdateDocTrPageReview(
+        [FromQuery] string documentId,
+        [FromQuery] int pageNumber,
+        [FromBody] Ocr.Api.Models.DocTrPageReviewRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(documentId))
+                return BadRequest("documentId is required.");
+
+            if (pageNumber <= 0)
+                return BadRequest("pageNumber must be greater than zero.");
+
+            if (request == null || string.IsNullOrWhiteSpace(request.ReviewStatus))
+                return BadRequest("ReviewStatus is required.");
+
+            await _docTrPersistenceService.UpdatePageReviewAsync(
+                documentId,
+                pageNumber,
+                request.ReviewStatus,
+                request.ReviewedBy
+            );
+
+            var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
+
+            return Ok(new
+            {
+                DocumentId = documentId,
+                PageNumber = pageNumber,
+                Page = page
             });
         }
         /*

@@ -45,21 +45,46 @@ namespace Ocr.Api.Services.Ocr
         public async Task SavePageAsync(DocTrPageRecord pageRecord)
         {
             const string sql = @"
-            IF EXISTS (SELECT 1 FROM OCR_Page WHERE documentId = @documentId AND pageNumber = @pageNumber)
-            BEGIN
-                UPDATE OCR_Page
-                SET engine = @engine,
-                    sourceImagePath = @sourceImagePath,
-                    fullText = @fullText,
-                    confidence = @confidence
-                WHERE documentId = @documentId
-                  AND pageNumber = @pageNumber
-            END
-            ELSE
-            BEGIN
-                INSERT INTO OCR_Page (documentId, pageNumber, engine, sourceImagePath, fullText, confidence)
-                VALUES (@documentId, @pageNumber, @engine, @sourceImagePath, @fullText, @confidence)
-            END";
+        IF EXISTS (SELECT 1 FROM OCR_Page WHERE documentId = @documentId AND pageNumber = @pageNumber)
+        BEGIN
+            UPDATE OCR_Page
+            SET engine = @engine,
+                sourceImagePath = @sourceImagePath,
+                fullText = @fullText,
+                confidence = @confidence,
+                reviewStatus = @reviewStatus,
+                reviewedBy = @reviewedBy,
+                reviewedAt = @reviewedAt
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber
+        END
+        ELSE
+        BEGIN
+            INSERT INTO OCR_Page
+            (
+                documentId,
+                pageNumber,
+                engine,
+                sourceImagePath,
+                fullText,
+                confidence,
+                reviewStatus,
+                reviewedBy,
+                reviewedAt
+            )
+            VALUES
+            (
+                @documentId,
+                @pageNumber,
+                @engine,
+                @sourceImagePath,
+                @fullText,
+                @confidence,
+                @reviewStatus,
+                @reviewedBy,
+                @reviewedAt
+            )
+        END";
 
             await using var conn = _dbConnectionFactory.CreateConnection();
             await conn.OpenAsync();
@@ -71,6 +96,9 @@ namespace Ocr.Api.Services.Ocr
             cmd.Parameters.AddWithValue("@sourceImagePath", (object?)pageRecord.SourceImagePath ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@fullText", (object?)pageRecord.FullText ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@confidence", pageRecord.Confidence);
+            cmd.Parameters.AddWithValue("@reviewStatus", pageRecord.ReviewStatus);
+            cmd.Parameters.AddWithValue("@reviewedBy", (object?)pageRecord.ReviewedBy ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@reviewedAt", (object?)pageRecord.ReviewedAt ?? DBNull.Value);
 
             await cmd.ExecuteNonQueryAsync();
         }
@@ -156,7 +184,8 @@ namespace Ocr.Api.Services.Ocr
         public async Task<DocTrPageRecord?> GetPageAsync(string documentId, int pageNumber)
         {
             const string sql = @"
-            SELECT documentId, pageNumber, engine, sourceImagePath, fullText, confidence, createdAt
+            SELECT documentId, pageNumber, engine, sourceImagePath, fullText, confidence,
+                   reviewStatus, reviewedBy, reviewedAt, createdAt
             FROM OCR_Page
             WHERE documentId = @documentId
               AND pageNumber = @pageNumber";
@@ -180,7 +209,10 @@ namespace Ocr.Api.Services.Ocr
                 SourceImagePath = reader["sourceImagePath"] == DBNull.Value ? string.Empty : reader["sourceImagePath"].ToString() ?? string.Empty,
                 FullText = reader["fullText"] == DBNull.Value ? string.Empty : reader["fullText"].ToString() ?? string.Empty,
                 Confidence = Convert.ToSingle(reader["confidence"]),
-                CreatedAt = reader["createdAt"] == DBNull.Value ? DateTime.UtcNow : Convert.ToDateTime(reader["createdAt"])
+                CreatedAt = reader["createdAt"] == DBNull.Value ? DateTime.UtcNow : Convert.ToDateTime(reader["createdAt"]),
+                ReviewStatus = reader["reviewStatus"] == DBNull.Value ? "NotReviewed" : reader["reviewStatus"].ToString() ?? "NotReviewed",
+                ReviewedBy = reader["reviewedBy"] == DBNull.Value ? null : reader["reviewedBy"].ToString(),
+                ReviewedAt = reader["reviewedAt"] == DBNull.Value ? null : Convert.ToDateTime(reader["reviewedAt"]),
             };
         }
 
@@ -230,14 +262,14 @@ namespace Ocr.Api.Services.Ocr
             if (correctionList.Count == 0)
                 return;
 
-            const string selectSql = @"
+            const string selectWordSql = @"
             SELECT correctedText, rawText
             FROM OCR_Word
             WHERE documentId = @documentId
               AND pageNumber = @pageNumber
               AND wordOrder = @wordOrder";
 
-                        const string historySql = @"
+            const string insertHistorySql = @"
             INSERT INTO OCR_WordCorrectionHistory
             (
                 documentId,
@@ -257,12 +289,26 @@ namespace Ocr.Api.Services.Ocr
                 @correctedBy
             )";
 
-            const string updateSql = @"
+            const string updateWordSql = @"
             UPDATE OCR_Word
             SET correctedText = @correctedText
             WHERE documentId = @documentId
               AND pageNumber = @pageNumber
               AND wordOrder = @wordOrder";
+
+            const string selectPageStatusSql = @"
+            SELECT reviewStatus
+            FROM OCR_Page
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber";
+
+            const string updatePageStatusSql = @"
+            UPDATE OCR_Page
+            SET reviewStatus = 'NeedsRecheck',
+                reviewedBy = NULL,
+                reviewedAt = NULL
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber";
 
             await using var conn = _dbConnectionFactory.CreateConnection();
             await conn.OpenAsync();
@@ -270,11 +316,14 @@ namespace Ocr.Api.Services.Ocr
 
             try
             {
+                bool hasRealChanges = false;
+
                 foreach (var correction in correctionList)
                 {
-                    string? oldText = null;
+                    string? rawText = null;
+                    string? existingCorrectedText = null;
 
-                    await using (var selectCmd = new SqlCommand(selectSql, conn, (SqlTransaction)tx))
+                    await using (var selectCmd = new SqlCommand(selectWordSql, conn, (SqlTransaction)tx))
                     {
                         selectCmd.Parameters.AddWithValue("@documentId", documentId);
                         selectCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
@@ -284,26 +333,39 @@ namespace Ocr.Api.Services.Ocr
 
                         if (await reader.ReadAsync())
                         {
-                            var existingCorrected = reader["correctedText"] == DBNull.Value ? null : reader["correctedText"].ToString();
-                            var rawText = reader["rawText"] == DBNull.Value ? null : reader["rawText"].ToString();
-
-                            oldText = string.IsNullOrWhiteSpace(existingCorrected) ? rawText : existingCorrected;
+                            existingCorrectedText = reader["correctedText"] == DBNull.Value ? null : reader["correctedText"].ToString();
+                            rawText = reader["rawText"] == DBNull.Value ? null : reader["rawText"].ToString();
+                        }
+                        else
+                        {
+                            continue;
                         }
                     }
 
-                    await using (var historyCmd = new SqlCommand(historySql, conn, (SqlTransaction)tx))
+                    string currentFinalText = string.IsNullOrWhiteSpace(existingCorrectedText)
+                        ? (rawText ?? string.Empty)
+                        : existingCorrectedText;
+
+                    string newFinalText = correction.CorrectedText ?? string.Empty;
+
+                    if (string.Equals(currentFinalText, newFinalText, StringComparison.Ordinal))
+                        continue;
+
+                    hasRealChanges = true;
+
+                    await using (var historyCmd = new SqlCommand(insertHistorySql, conn, (SqlTransaction)tx))
                     {
                         historyCmd.Parameters.AddWithValue("@documentId", documentId);
                         historyCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
                         historyCmd.Parameters.AddWithValue("@wordOrder", correction.WordOrder);
-                        historyCmd.Parameters.AddWithValue("@oldText", (object?)oldText ?? DBNull.Value);
-                        historyCmd.Parameters.AddWithValue("@newText", (object?)correction.CorrectedText ?? DBNull.Value);
+                        historyCmd.Parameters.AddWithValue("@oldText", (object?)currentFinalText ?? DBNull.Value);
+                        historyCmd.Parameters.AddWithValue("@newText", (object?)newFinalText ?? DBNull.Value);
                         historyCmd.Parameters.AddWithValue("@correctedBy", (object?)correction.CorrectedBy ?? DBNull.Value);
 
                         await historyCmd.ExecuteNonQueryAsync();
                     }
 
-                    await using (var updateCmd = new SqlCommand(updateSql, conn, (SqlTransaction)tx))
+                    await using (var updateCmd = new SqlCommand(updateWordSql, conn, (SqlTransaction)tx))
                     {
                         updateCmd.Parameters.AddWithValue("@documentId", documentId);
                         updateCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
@@ -311,6 +373,29 @@ namespace Ocr.Api.Services.Ocr
                         updateCmd.Parameters.AddWithValue("@correctedText", (object?)correction.CorrectedText ?? DBNull.Value);
 
                         await updateCmd.ExecuteNonQueryAsync();
+                    }
+                }
+
+                if (hasRealChanges)
+                {
+                    string? currentReviewStatus = null;
+
+                    await using (var pageStatusCmd = new SqlCommand(selectPageStatusSql, conn, (SqlTransaction)tx))
+                    {
+                        pageStatusCmd.Parameters.AddWithValue("@documentId", documentId);
+                        pageStatusCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+
+                        var result = await pageStatusCmd.ExecuteScalarAsync();
+                        currentReviewStatus = result == null || result == DBNull.Value ? null : result.ToString();
+                    }
+
+                    if (string.Equals(currentReviewStatus, "Reviewed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        await using var updatePageCmd = new SqlCommand(updatePageStatusSql, conn, (SqlTransaction)tx);
+                        updatePageCmd.Parameters.AddWithValue("@documentId", documentId);
+                        updatePageCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+
+                        await updatePageCmd.ExecuteNonQueryAsync();
                     }
                 }
 
@@ -414,6 +499,31 @@ namespace Ocr.Api.Services.Ocr
             }
 
             return history;
+        }
+
+        public async Task UpdatePageReviewAsync(string documentId, int pageNumber, string reviewStatus, string? reviewedBy)
+        {
+            const string sql = @"
+            UPDATE OCR_Page
+            SET reviewStatus = @reviewStatus,
+                reviewedBy = @reviewedBy,
+                reviewedAt = CASE
+                    WHEN @reviewStatus = 'Reviewed' THEN SYSUTCDATETIME()
+                    ELSE reviewedAt
+                END
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber";
+
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@documentId", documentId);
+            cmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+            cmd.Parameters.AddWithValue("@reviewStatus", reviewStatus);
+            cmd.Parameters.AddWithValue("@reviewedBy", (object?)reviewedBy ?? DBNull.Value);
+
+            await cmd.ExecuteNonQueryAsync();
         }
     }
 }

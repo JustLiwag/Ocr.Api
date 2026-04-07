@@ -13,6 +13,7 @@ namespace Ocr.Api.Services.Ocr
         Task SaveCorrectionsAsync(string documentId, int pageNumber, IEnumerable<DocTrWordCorrectionRequest> corrections);
         Task<List<int>> GetPageNumbersAsync(string documentId);
         Task<List<DocTrWordCorrectionHistoryRecord>> GetCorrectionHistoryAsync(string documentId, int pageNumber, int wordOrder);
+        Task UpdatePageReviewAsync(string documentId, int pageNumber, string reviewStatus, string? reviewedBy);
 
     }
 }

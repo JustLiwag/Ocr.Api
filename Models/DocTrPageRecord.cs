@@ -8,6 +8,9 @@
         public string SourceImagePath { get; set; } = string.Empty;
         public string FullText { get; set; } = string.Empty;
         public float Confidence { get; set; }
+        public string ReviewStatus { get; set; } = "NotReviewed";
+        public string? ReviewedBy { get; set; }
+        public DateTime? ReviewedAt { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }
