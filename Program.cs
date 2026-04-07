@@ -5,6 +5,9 @@ using Ocr.Api.Services.Ocr;
 using Ocr.Api.Services.Pdf;
 using Ocr.Api.Services.Pipeline;
 using Ocr.Api.Services.Rendering;
+using PdfSharp.Fonts;
+
+GlobalFontSettings.UseWindowsFontsUnderWindows = true;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,6 +30,8 @@ builder.Services.AddScoped<IOcrPipelineService, OcrPipelineService>();
 builder.Services.AddScoped<IPdfMergeService, GhostscriptMergeService>();
 // docTR service (python)
 builder.Services.AddScoped<IDocTrService, DocTrService>();
+// PDF Searchable
+builder.Services.AddScoped<ISearchablePdfBuilderService, PdfSharpSearchablePdfBuilderService>();
 
 
 

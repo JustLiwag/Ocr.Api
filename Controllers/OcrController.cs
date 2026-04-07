@@ -28,7 +28,9 @@ namespace Ocr.Api.Controllers
         private readonly IImagePreprocessingService _imagePreprocessingService;
         private readonly IConfiguration _config;
         private readonly IOcrPipelineService _ocrPipelineService;
+        // docTR service for testing and comparison
         private readonly IDocTrService _docTrService;
+        private readonly ISearchablePdfBuilderService _searchablePdfBuilderService;
 
         public OcrController(
             ITempFileService tempFileService,
@@ -39,7 +41,8 @@ namespace Ocr.Api.Controllers
             IImagePreprocessingService imagePreprocessingService,
             IConfiguration config,
             IOcrPipelineService ocrPipelineService,
-            IDocTrService docTrService)
+            IDocTrService docTrService,
+            ISearchablePdfBuilderService searchablePdfBuilderService)
         {
             _tempFileService = tempFileService;
             _pdfTextDetector = pdfTextDetector;
@@ -50,6 +53,59 @@ namespace Ocr.Api.Controllers
             _config = config;
             _ocrPipelineService = ocrPipelineService;
             _docTrService = docTrService;
+            _searchablePdfBuilderService = searchablePdfBuilderService;
+        }
+
+        [HttpPost("doctr-build-page")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> RunDocTrBuildPage(IFormFile file)
+        {
+            if (file == null || file.Length == 0)
+                return BadRequest("No file uploaded.");
+
+            var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+
+            if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".tif" && ext != ".tiff" && ext != ".webp")
+                return BadRequest("Please upload an image file.");
+
+            string rootDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Downloads",
+                "OCR Test Data",
+                "results",
+                "doctr_test"
+            );
+
+            Directory.CreateDirectory(rootDir);
+
+            var safeName = string.Concat(
+                Path.GetFileNameWithoutExtension(file.FileName)
+                    .Split(Path.GetInvalidFileNameChars())
+            );
+
+            var tempJobDir = _tempFileService.CreateJobDirectory("doctr_build_page");
+            var inputPath = await _tempFileService.SaveFileAsync(file, tempJobDir);
+
+            var doctrResult = await _docTrService.RunOcrAsync(inputPath);
+
+            var outputPdfPath = Path.Combine(rootDir, $"{safeName}_doctr.pdf");
+
+            var builtPdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
+                inputPath,
+                doctrResult.Words,
+                outputPdfPath
+            );
+
+            return Ok(new
+            {
+                doctrResult.Engine,
+                doctrResult.ImagePath,
+                doctrResult.Confidence,
+                doctrResult.FullText,
+                WordCount = doctrResult.Words.Count,
+                doctrResult.JsonPath,
+                OutputPdf = builtPdf
+            });
         }
 
         [HttpPost("doctr-test")]
