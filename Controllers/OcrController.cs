@@ -58,7 +58,7 @@ namespace Ocr.Api.Controllers
             _searchablePdfBuilderService = searchablePdfBuilderService;
             _docTrPersistenceService = docTrPersistenceService;
         }
-
+        /*
         [HttpPost("doctr-build-page")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunDocTrBuildPage(IFormFile file)
@@ -268,7 +268,7 @@ namespace Ocr.Api.Controllers
                     _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
             }
         }
-
+        */
         [HttpGet("doctr-page")]
         public async Task<IActionResult> GetDocTrPage(string documentId, int pageNumber)
         {
@@ -697,6 +697,29 @@ namespace Ocr.Api.Controllers
             });
         }
 
+        [HttpGet("doctr-correction-history")]
+        public async Task<IActionResult> GetDocTrCorrectionHistory(string documentId, int pageNumber, int wordOrder)
+        {
+            if (string.IsNullOrWhiteSpace(documentId))
+                return BadRequest("documentId is required.");
+
+            if (pageNumber <= 0)
+                return BadRequest("pageNumber must be greater than zero.");
+
+            if (wordOrder <= 0)
+                return BadRequest("wordOrder must be greater than zero.");
+
+            var history = await _docTrPersistenceService.GetCorrectionHistoryAsync(documentId, pageNumber, wordOrder);
+
+            return Ok(new
+            {
+                DocumentId = documentId,
+                PageNumber = pageNumber,
+                WordOrder = wordOrder,
+                History = history
+            });
+        }
+        /*
         [HttpPost("doctr-test")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunDocTrTest(IFormFile file)
@@ -719,7 +742,8 @@ namespace Ocr.Api.Controllers
                 result.JsonPath
             });
         }
-
+        */
+        /*
         [HttpPost("manual")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunManualOcr(IFormFile file)
@@ -727,7 +751,8 @@ namespace Ocr.Api.Controllers
             var result = await ProcessSingleFileAsync(file);
             return Ok(result);
         }
-
+        /*
+        /*
         [HttpPost("batch")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RunBatchOcr(List<IFormFile> files)
@@ -766,7 +791,8 @@ namespace Ocr.Api.Controllers
                 Results = results
             });
         }
-
+        */
+        /*
         [HttpPost("merge-searchable")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> MergeSearchable(List<IFormFile> files)
@@ -777,6 +803,7 @@ namespace Ocr.Api.Controllers
             var result = await _ocrPipelineService.MergeSearchableAsync(files);
             return Ok(result);
         }
+        */
 
         private static int GetRenderDpi(int pageCount)
         {

@@ -230,7 +230,34 @@ namespace Ocr.Api.Services.Ocr
             if (correctionList.Count == 0)
                 return;
 
-            const string sql = @"
+            const string selectSql = @"
+            SELECT correctedText, rawText
+            FROM OCR_Word
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber
+              AND wordOrder = @wordOrder";
+
+                        const string historySql = @"
+            INSERT INTO OCR_WordCorrectionHistory
+            (
+                documentId,
+                pageNumber,
+                wordOrder,
+                oldText,
+                newText,
+                correctedBy
+            )
+            VALUES
+            (
+                @documentId,
+                @pageNumber,
+                @wordOrder,
+                @oldText,
+                @newText,
+                @correctedBy
+            )";
+
+            const string updateSql = @"
             UPDATE OCR_Word
             SET correctedText = @correctedText
             WHERE documentId = @documentId
@@ -245,13 +272,46 @@ namespace Ocr.Api.Services.Ocr
             {
                 foreach (var correction in correctionList)
                 {
-                    await using var cmd = new SqlCommand(sql, conn, (SqlTransaction)tx);
-                    cmd.Parameters.AddWithValue("@documentId", documentId);
-                    cmd.Parameters.AddWithValue("@pageNumber", pageNumber);
-                    cmd.Parameters.AddWithValue("@wordOrder", correction.WordOrder);
-                    cmd.Parameters.AddWithValue("@correctedText", (object?)correction.CorrectedText ?? DBNull.Value);
+                    string? oldText = null;
 
-                    await cmd.ExecuteNonQueryAsync();
+                    await using (var selectCmd = new SqlCommand(selectSql, conn, (SqlTransaction)tx))
+                    {
+                        selectCmd.Parameters.AddWithValue("@documentId", documentId);
+                        selectCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+                        selectCmd.Parameters.AddWithValue("@wordOrder", correction.WordOrder);
+
+                        await using var reader = await selectCmd.ExecuteReaderAsync();
+
+                        if (await reader.ReadAsync())
+                        {
+                            var existingCorrected = reader["correctedText"] == DBNull.Value ? null : reader["correctedText"].ToString();
+                            var rawText = reader["rawText"] == DBNull.Value ? null : reader["rawText"].ToString();
+
+                            oldText = string.IsNullOrWhiteSpace(existingCorrected) ? rawText : existingCorrected;
+                        }
+                    }
+
+                    await using (var historyCmd = new SqlCommand(historySql, conn, (SqlTransaction)tx))
+                    {
+                        historyCmd.Parameters.AddWithValue("@documentId", documentId);
+                        historyCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+                        historyCmd.Parameters.AddWithValue("@wordOrder", correction.WordOrder);
+                        historyCmd.Parameters.AddWithValue("@oldText", (object?)oldText ?? DBNull.Value);
+                        historyCmd.Parameters.AddWithValue("@newText", (object?)correction.CorrectedText ?? DBNull.Value);
+                        historyCmd.Parameters.AddWithValue("@correctedBy", (object?)correction.CorrectedBy ?? DBNull.Value);
+
+                        await historyCmd.ExecuteNonQueryAsync();
+                    }
+
+                    await using (var updateCmd = new SqlCommand(updateSql, conn, (SqlTransaction)tx))
+                    {
+                        updateCmd.Parameters.AddWithValue("@documentId", documentId);
+                        updateCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+                        updateCmd.Parameters.AddWithValue("@wordOrder", correction.WordOrder);
+                        updateCmd.Parameters.AddWithValue("@correctedText", (object?)correction.CorrectedText ?? DBNull.Value);
+
+                        await updateCmd.ExecuteNonQueryAsync();
+                    }
                 }
 
                 await tx.CommitAsync();
@@ -315,6 +375,45 @@ namespace Ocr.Api.Services.Ocr
                     ? DateTime.UtcNow
                     : Convert.ToDateTime(reader["createdAt"])
             };
+        }
+
+        public async Task<List<DocTrWordCorrectionHistoryRecord>> GetCorrectionHistoryAsync(string documentId, int pageNumber, int wordOrder)
+        {
+            const string sql = @"
+            SELECT historyId, documentId, pageNumber, wordOrder, oldText, newText, correctedAt, correctedBy
+            FROM OCR_WordCorrectionHistory
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber
+              AND wordOrder = @wordOrder
+            ORDER BY correctedAt DESC, historyId DESC";
+
+            var history = new List<DocTrWordCorrectionHistoryRecord>();
+
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@documentId", documentId);
+            cmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+            cmd.Parameters.AddWithValue("@wordOrder", wordOrder);
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                history.Add(new DocTrWordCorrectionHistoryRecord
+                {
+                    HistoryId = Convert.ToInt64(reader["historyId"]),
+                    DocumentId = reader["documentId"].ToString() ?? string.Empty,
+                    PageNumber = Convert.ToInt32(reader["pageNumber"]),
+                    WordOrder = Convert.ToInt32(reader["wordOrder"]),
+                    OldText = reader["oldText"] == DBNull.Value ? null : reader["oldText"].ToString(),
+                    NewText = reader["newText"] == DBNull.Value ? null : reader["newText"].ToString(),
+                    CorrectedAt = Convert.ToDateTime(reader["correctedAt"]),
+                    CorrectedBy = reader["correctedBy"] == DBNull.Value ? null : reader["correctedBy"].ToString()
+                });
+            }
+
+            return history;
         }
     }
 }

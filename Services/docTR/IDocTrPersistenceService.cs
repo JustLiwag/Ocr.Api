@@ -12,6 +12,7 @@ namespace Ocr.Api.Services.Ocr
         Task<List<DocTrWordRecord>> GetWordsAsync(string documentId, int pageNumber);
         Task SaveCorrectionsAsync(string documentId, int pageNumber, IEnumerable<DocTrWordCorrectionRequest> corrections);
         Task<List<int>> GetPageNumbersAsync(string documentId);
-        
+        Task<List<DocTrWordCorrectionHistoryRecord>> GetCorrectionHistoryAsync(string documentId, int pageNumber, int wordOrder);
+
     }
 }
