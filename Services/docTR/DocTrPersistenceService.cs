@@ -1,39 +1,78 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Data.SqlClient;
 using Ocr.Api.Models;
-using System.Text.Json;
+using Ocr.Api.Data;
 
 namespace Ocr.Api.Services.Ocr
 {
     public class DocTrPersistenceService : IDocTrPersistenceService
     {
-        private readonly string _persistenceRoot;
+        private readonly IDbConnectionFactory _dbConnectionFactory;
 
-        public DocTrPersistenceService(IConfiguration config)
+        public DocTrPersistenceService(IDbConnectionFactory dbConnectionFactory)
         {
-            _persistenceRoot = config["DocTr:PersistenceRoot"]
-                ?? Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    "Downloads",
-                    "OCR Test Data",
-                    "doctr_persistence"
-                );
+            _dbConnectionFactory = dbConnectionFactory;
+        }
 
-            Directory.CreateDirectory(_persistenceRoot);
+        public async Task SaveDocumentAsync(DocTrDocumentRecord documentRecord)
+        {
+            const string sql = @"
+            IF EXISTS (SELECT 1 FROM OCR_Document WHERE documentId = @documentId)
+            BEGIN
+                UPDATE OCR_Document
+                SET fileName = @fileName,
+                    pageCount = @pageCount,
+                    engine = @engine
+                WHERE documentId = @documentId
+            END
+            ELSE
+            BEGIN
+                INSERT INTO OCR_Document (documentId, fileName, pageCount, engine)
+                VALUES (@documentId, @fileName, @pageCount, @engine)
+            END";
+
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@documentId", documentRecord.DocumentId);
+            cmd.Parameters.AddWithValue("@fileName", documentRecord.FileName);
+            cmd.Parameters.AddWithValue("@pageCount", documentRecord.PageCount);
+            cmd.Parameters.AddWithValue("@engine", documentRecord.Engine);
+
+            await cmd.ExecuteNonQueryAsync();
         }
 
         public async Task SavePageAsync(DocTrPageRecord pageRecord)
         {
-            string docDir = GetDocumentDirectory(pageRecord.DocumentId);
-            Directory.CreateDirectory(docDir);
+            const string sql = @"
+            IF EXISTS (SELECT 1 FROM OCR_Page WHERE documentId = @documentId AND pageNumber = @pageNumber)
+            BEGIN
+                UPDATE OCR_Page
+                SET engine = @engine,
+                    sourceImagePath = @sourceImagePath,
+                    fullText = @fullText,
+                    confidence = @confidence
+                WHERE documentId = @documentId
+                  AND pageNumber = @pageNumber
+            END
+            ELSE
+            BEGIN
+                INSERT INTO OCR_Page (documentId, pageNumber, engine, sourceImagePath, fullText, confidence)
+                VALUES (@documentId, @pageNumber, @engine, @sourceImagePath, @fullText, @confidence)
+            END";
 
-            string pagePath = GetPagePath(pageRecord.DocumentId, pageRecord.PageNumber);
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
 
-            string json = JsonSerializer.Serialize(pageRecord, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@documentId", pageRecord.DocumentId);
+            cmd.Parameters.AddWithValue("@pageNumber", pageRecord.PageNumber);
+            cmd.Parameters.AddWithValue("@engine", pageRecord.Engine);
+            cmd.Parameters.AddWithValue("@sourceImagePath", (object?)pageRecord.SourceImagePath ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@fullText", (object?)pageRecord.FullText ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@confidence", pageRecord.Confidence);
 
-            await File.WriteAllTextAsync(pagePath, json);
+            await cmd.ExecuteNonQueryAsync();
         }
 
         public async Task SaveWordsAsync(IEnumerable<DocTrWordRecord> wordRecords)
@@ -42,50 +81,147 @@ namespace Ocr.Api.Services.Ocr
             if (wordList.Count == 0)
                 return;
 
-            string documentId = wordList[0].DocumentId;
-            int pageNumber = wordList[0].PageNumber;
+            const string deleteSql = @"
+            DELETE FROM OCR_Word
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber";
 
-            string docDir = GetDocumentDirectory(documentId);
-            Directory.CreateDirectory(docDir);
+                        const string insertSql = @"
+            INSERT INTO OCR_Word
+            (
+                documentId,
+                pageNumber,
+                wordOrder,
+                rawText,
+                correctedText,
+                confidence,
+                xMin,
+                yMin,
+                xMax,
+                yMax
+            )
+            VALUES
+            (
+                @documentId,
+                @pageNumber,
+                @wordOrder,
+                @rawText,
+                @correctedText,
+                @confidence,
+                @xMin,
+                @yMin,
+                @xMax,
+                @yMax
+            )";
 
-            string wordsPath = GetWordsPath(documentId, pageNumber);
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+            await using var tx = await conn.BeginTransactionAsync();
 
-            string json = JsonSerializer.Serialize(wordList, new JsonSerializerOptions
+            try
             {
-                WriteIndented = true
-            });
+                await using (var deleteCmd = new SqlCommand(deleteSql, conn, (SqlTransaction)tx))
+                {
+                    deleteCmd.Parameters.AddWithValue("@documentId", wordList[0].DocumentId);
+                    deleteCmd.Parameters.AddWithValue("@pageNumber", wordList[0].PageNumber);
+                    await deleteCmd.ExecuteNonQueryAsync();
+                }
 
-            await File.WriteAllTextAsync(wordsPath, json);
+                foreach (var word in wordList)
+                {
+                    await using var insertCmd = new SqlCommand(insertSql, conn, (SqlTransaction)tx);
+                    insertCmd.Parameters.AddWithValue("@documentId", word.DocumentId);
+                    insertCmd.Parameters.AddWithValue("@pageNumber", word.PageNumber);
+                    insertCmd.Parameters.AddWithValue("@wordOrder", word.WordOrder);
+                    insertCmd.Parameters.AddWithValue("@rawText", word.RawText);
+                    insertCmd.Parameters.AddWithValue("@correctedText", (object?)word.CorrectedText ?? DBNull.Value);
+                    insertCmd.Parameters.AddWithValue("@confidence", word.Confidence);
+                    insertCmd.Parameters.AddWithValue("@xMin", word.XMin);
+                    insertCmd.Parameters.AddWithValue("@yMin", word.YMin);
+                    insertCmd.Parameters.AddWithValue("@xMax", word.XMax);
+                    insertCmd.Parameters.AddWithValue("@yMax", word.YMax);
+
+                    await insertCmd.ExecuteNonQueryAsync();
+                }
+
+                await tx.CommitAsync();
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
         }
 
         public async Task<DocTrPageRecord?> GetPageAsync(string documentId, int pageNumber)
         {
-            string pagePath = GetPagePath(documentId, pageNumber);
+            const string sql = @"
+            SELECT documentId, pageNumber, engine, sourceImagePath, fullText, confidence, createdAt
+            FROM OCR_Page
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber";
 
-            if (!File.Exists(pagePath))
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@documentId", documentId);
+            cmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
                 return null;
 
-            string json = await File.ReadAllTextAsync(pagePath);
-
-            return JsonSerializer.Deserialize<DocTrPageRecord>(json, new JsonSerializerOptions
+            return new DocTrPageRecord
             {
-                PropertyNameCaseInsensitive = true
-            });
+                DocumentId = reader["documentId"].ToString() ?? string.Empty,
+                PageNumber = Convert.ToInt32(reader["pageNumber"]),
+                Engine = reader["engine"].ToString() ?? "docTR",
+                SourceImagePath = reader["sourceImagePath"] == DBNull.Value ? string.Empty : reader["sourceImagePath"].ToString() ?? string.Empty,
+                FullText = reader["fullText"] == DBNull.Value ? string.Empty : reader["fullText"].ToString() ?? string.Empty,
+                Confidence = Convert.ToSingle(reader["confidence"]),
+                CreatedAt = reader["createdAt"] == DBNull.Value ? DateTime.UtcNow : Convert.ToDateTime(reader["createdAt"])
+            };
         }
 
         public async Task<List<DocTrWordRecord>> GetWordsAsync(string documentId, int pageNumber)
         {
-            string wordsPath = GetWordsPath(documentId, pageNumber);
+            const string sql = @"
+            SELECT documentId, pageNumber, wordOrder, rawText, correctedText, confidence, xMin, yMin, xMax, yMax, createdAt
+            FROM OCR_Word
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber
+            ORDER BY wordOrder";
 
-            if (!File.Exists(wordsPath))
-                return new List<DocTrWordRecord>();
+            var words = new List<DocTrWordRecord>();
 
-            string json = await File.ReadAllTextAsync(wordsPath);
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
 
-            return JsonSerializer.Deserialize<List<DocTrWordRecord>>(json, new JsonSerializerOptions
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@documentId", documentId);
+            cmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
             {
-                PropertyNameCaseInsensitive = true
-            }) ?? new List<DocTrWordRecord>();
+                words.Add(new DocTrWordRecord
+                {
+                    DocumentId = reader["documentId"].ToString() ?? string.Empty,
+                    PageNumber = Convert.ToInt32(reader["pageNumber"]),
+                    WordOrder = Convert.ToInt32(reader["wordOrder"]),
+                    RawText = reader["rawText"].ToString() ?? string.Empty,
+                    CorrectedText = reader["correctedText"] == DBNull.Value ? null : reader["correctedText"].ToString(),
+                    Confidence = Convert.ToSingle(reader["confidence"]),
+                    XMin = Convert.ToSingle(reader["xMin"]),
+                    YMin = Convert.ToSingle(reader["yMin"]),
+                    XMax = Convert.ToSingle(reader["xMax"]),
+                    YMax = Convert.ToSingle(reader["yMax"]),
+                    CreatedAt = reader["createdAt"] == DBNull.Value ? DateTime.UtcNow : Convert.ToDateTime(reader["createdAt"])
+                });
+            }
+
+            return words;
         }
 
         public async Task SaveCorrectionsAsync(string documentId, int pageNumber, IEnumerable<DocTrWordCorrectionRequest> corrections)
@@ -94,65 +230,91 @@ namespace Ocr.Api.Services.Ocr
             if (correctionList.Count == 0)
                 return;
 
-            var words = await GetWordsAsync(documentId, pageNumber);
-            if (words.Count == 0)
-                throw new FileNotFoundException("No persisted words found for the specified document/page.");
+            const string sql = @"
+            UPDATE OCR_Word
+            SET correctedText = @correctedText
+            WHERE documentId = @documentId
+              AND pageNumber = @pageNumber
+              AND wordOrder = @wordOrder";
 
-            var correctionMap = correctionList.ToDictionary(c => c.WordOrder, c => c.CorrectedText);
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+            await using var tx = await conn.BeginTransactionAsync();
 
-            foreach (var word in words)
+            try
             {
-                if (correctionMap.TryGetValue(word.WordOrder, out var correctedText))
-                    word.CorrectedText = correctedText;
+                foreach (var correction in correctionList)
+                {
+                    await using var cmd = new SqlCommand(sql, conn, (SqlTransaction)tx);
+                    cmd.Parameters.AddWithValue("@documentId", documentId);
+                    cmd.Parameters.AddWithValue("@pageNumber", pageNumber);
+                    cmd.Parameters.AddWithValue("@wordOrder", correction.WordOrder);
+                    cmd.Parameters.AddWithValue("@correctedText", (object?)correction.CorrectedText ?? DBNull.Value);
+
+                    await cmd.ExecuteNonQueryAsync();
+                }
+
+                await tx.CommitAsync();
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
+        }
+
+        public async Task<List<int>> GetPageNumbersAsync(string documentId)
+        {
+            const string sql = @"
+            SELECT pageNumber
+            FROM OCR_Page
+            WHERE documentId = @documentId
+            ORDER BY pageNumber";
+
+            var pageNumbers = new List<int>();
+
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@documentId", documentId);
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                pageNumbers.Add(Convert.ToInt32(reader["pageNumber"]));
             }
 
-            await SaveWordsAsync(words);
+            return pageNumbers;
         }
 
-        private string GetDocumentDirectory(string documentId)
+        public async Task<DocTrDocumentRecord?> GetDocumentAsync(string documentId)
         {
-            var safeDocumentId = string.Concat(
-                documentId.Split(Path.GetInvalidFileNameChars())
-            );
+            const string sql = @"
+            SELECT documentId, fileName, pageCount, engine, createdAt
+            FROM OCR_Document
+            WHERE documentId = @documentId";
 
-            return Path.Combine(_persistenceRoot, safeDocumentId);
-        }
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
 
-        private string GetPagePath(string documentId, int pageNumber)
-        {
-            return Path.Combine(
-                GetDocumentDirectory(documentId),
-                $"page_{pageNumber:000}_page.json"
-            );
-        }
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@documentId", documentId);
 
-        private string GetWordsPath(string documentId, int pageNumber)
-        {
-            return Path.Combine(
-                GetDocumentDirectory(documentId),
-                $"page_{pageNumber:000}_words.json"
-            );
-        }
+            await using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
+                return null;
 
-        public Task<List<int>> GetPageNumbersAsync(string documentId)
-        {
-            string docDir = GetDocumentDirectory(documentId);
-
-            if (!Directory.Exists(docDir))
-                return Task.FromResult(new List<int>());
-
-            var pageNumbers = Directory.GetFiles(docDir, "page_*_page.json")
-                .Select(Path.GetFileNameWithoutExtension)
-                .Select(name =>
-                {
-                    var parts = name!.Split('_');
-                    return int.TryParse(parts[1], out var pageNo) ? pageNo : -1;
-                })
-                .Where(n => n > 0)
-                .OrderBy(n => n)
-                .ToList();
-
-            return Task.FromResult(pageNumbers);
+            return new DocTrDocumentRecord
+            {
+                DocumentId = reader["documentId"].ToString() ?? string.Empty,
+                FileName = reader["fileName"].ToString() ?? string.Empty,
+                PageCount = Convert.ToInt32(reader["pageCount"]),
+                Engine = reader["engine"].ToString() ?? "docTR",
+                CreatedAt = reader["createdAt"] == DBNull.Value
+                    ? DateTime.UtcNow
+                    : Convert.ToDateTime(reader["createdAt"])
+            };
         }
     }
 }

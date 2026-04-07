@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.Connections;
 using Ocr.Api.Services;
+using Ocr.Api.Data;
 using Ocr.Api.Services.FileStorage;
 using Ocr.Api.Services.ImageProcessing;
 using Ocr.Api.Services.Ocr;
@@ -33,6 +35,8 @@ builder.Services.AddScoped<IDocTrService, DocTrService>();
 builder.Services.AddScoped<IDocTrPersistenceService, DocTrPersistenceService>();
 // PDF Searchable
 builder.Services.AddScoped<ISearchablePdfBuilderService, PdfSharpSearchablePdfBuilderService>();
+// OCR Db
+builder.Services.AddScoped<IDbConnectionFactory, SqlConnectionFactory>();
 
 
 

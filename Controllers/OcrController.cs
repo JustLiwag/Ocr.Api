@@ -177,6 +177,14 @@ namespace Ocr.Api.Controllers
 
                 string documentId = $"{safeName}_{DateTime.Now:yyyyMMddHHmmss}";
 
+                await _docTrPersistenceService.SaveDocumentAsync(new Ocr.Api.Models.DocTrDocumentRecord
+                {
+                    DocumentId = documentId,
+                    FileName = file.FileName,
+                    PageCount = pageCount,
+                    Engine = "docTR"
+                });
+
                 string pageImageDir = Path.Combine(rootDir, "page_images", documentId);
                 Directory.CreateDirectory(pageImageDir);
 
@@ -477,6 +485,14 @@ namespace Ocr.Api.Controllers
                 int renderDpi = GetRenderDpi(pageCount);
                 bool largeDocument = pageCount > 75;
 
+                await _docTrPersistenceService.SaveDocumentAsync(new Ocr.Api.Models.DocTrDocumentRecord
+                {
+                    DocumentId = documentId,
+                    FileName = file.FileName,
+                    PageCount = pageCount,
+                    Engine = "docTR"
+                });
+
                 for (int pageNumber = 1; pageNumber <= pageCount; pageNumber++)
                 {
                     string renderedImagePath = await _renderService.RenderPageAsync(
@@ -591,6 +607,94 @@ namespace Ocr.Api.Controllers
                 if (cleanupTemps)
                     _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
             }
+        }
+
+        [HttpGet("doctr-document")]
+        public async Task<IActionResult> GetDocTrDocument(string documentId)
+        {
+            if (string.IsNullOrWhiteSpace(documentId))
+                return BadRequest("documentId is required.");
+
+            var document = await _docTrPersistenceService.GetDocumentAsync(documentId);
+
+            if (document == null)
+                return NotFound("Document record not found.");
+
+            var pageNumbers = await _docTrPersistenceService.GetPageNumbersAsync(documentId);
+
+            if (pageNumbers.Count == 0)
+                return NotFound("No persisted document found for the specified documentId.");
+
+            var pageSummaries = new List<object>();
+            int totalWords = 0;
+            int correctedWords = 0;
+            var confidenceScores = new List<float>();
+
+            foreach (var pageNumber in pageNumbers)
+            {
+                var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
+                var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
+
+                int pageWordCount = words.Count;
+                int pageCorrectedWords = words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText));
+                float pageConfidence = pageWordCount > 0
+                    ? words.Average(w => w.Confidence) * 100f
+                    : 0f;
+
+                string reviewStatus;
+
+                if (pageCorrectedWords == 0)
+                    reviewStatus = "NotReviewed";
+                else if (pageCorrectedWords < pageWordCount)
+                    reviewStatus = "PartiallyCorrected";
+                else
+                    reviewStatus = "Corrected";
+
+                totalWords += pageWordCount;
+                correctedWords += pageCorrectedWords;
+                confidenceScores.Add(pageConfidence);
+
+                pageSummaries.Add(new
+                {
+                    PageNumber = pageNumber,
+                    Engine = page?.Engine ?? "docTR",
+                    WordCount = pageWordCount,
+                    CorrectedWords = pageCorrectedWords,
+                    OcrConfidence = Math.Round(pageConfidence, 2),
+                    Quality = GetQualityLabel(pageConfidence),
+                    ReviewStatus = reviewStatus,
+                    SourceImagePath = page?.SourceImagePath ?? string.Empty
+                });
+            }
+
+            float overallConfidence = confidenceScores.Count > 0
+                ? confidenceScores.Average()
+                : 0f;
+
+            string overallStatus;
+
+            if (correctedWords == 0)
+                overallStatus = "NotReviewed";
+            else if (correctedWords < totalWords)
+                overallStatus = "PartiallyCorrected";
+            else
+                overallStatus = "Corrected";
+
+            return Ok(new
+            {
+                DocumentId = document.DocumentId,
+                FileName = document.FileName,
+                Engine = document.Engine,
+                DeclaredPageCount = document.PageCount,
+                Pages = pageNumbers.Count,
+                WordCount = totalWords,
+                CorrectedWords = correctedWords,
+                OcrConfidence = Math.Round(overallConfidence, 2),
+                Quality = GetQualityLabel(overallConfidence),
+                ReviewStatus = overallStatus,
+                CreatedAt = document.CreatedAt,
+                PageSummaries = pageSummaries
+            });
         }
 
         [HttpPost("doctr-test")]
