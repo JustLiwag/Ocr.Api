@@ -14,5 +14,5 @@
         public float XMax { get; set; }
         public float YMax { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-    }
+    }   
 }

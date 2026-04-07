@@ -26,10 +26,7 @@ namespace Ocr.Api.Services.Ocr
             string docDir = GetDocumentDirectory(pageRecord.DocumentId);
             Directory.CreateDirectory(docDir);
 
-            string pagePath = Path.Combine(
-                docDir,
-                $"page_{pageRecord.PageNumber:000}_page.json"
-            );
+            string pagePath = GetPagePath(pageRecord.DocumentId, pageRecord.PageNumber);
 
             string json = JsonSerializer.Serialize(pageRecord, new JsonSerializerOptions
             {
@@ -51,10 +48,7 @@ namespace Ocr.Api.Services.Ocr
             string docDir = GetDocumentDirectory(documentId);
             Directory.CreateDirectory(docDir);
 
-            string wordsPath = Path.Combine(
-                docDir,
-                $"page_{pageNumber:000}_words.json"
-            );
+            string wordsPath = GetWordsPath(documentId, pageNumber);
 
             string json = JsonSerializer.Serialize(wordList, new JsonSerializerOptions
             {
@@ -64,6 +58,57 @@ namespace Ocr.Api.Services.Ocr
             await File.WriteAllTextAsync(wordsPath, json);
         }
 
+        public async Task<DocTrPageRecord?> GetPageAsync(string documentId, int pageNumber)
+        {
+            string pagePath = GetPagePath(documentId, pageNumber);
+
+            if (!File.Exists(pagePath))
+                return null;
+
+            string json = await File.ReadAllTextAsync(pagePath);
+
+            return JsonSerializer.Deserialize<DocTrPageRecord>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+        }
+
+        public async Task<List<DocTrWordRecord>> GetWordsAsync(string documentId, int pageNumber)
+        {
+            string wordsPath = GetWordsPath(documentId, pageNumber);
+
+            if (!File.Exists(wordsPath))
+                return new List<DocTrWordRecord>();
+
+            string json = await File.ReadAllTextAsync(wordsPath);
+
+            return JsonSerializer.Deserialize<List<DocTrWordRecord>>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            }) ?? new List<DocTrWordRecord>();
+        }
+
+        public async Task SaveCorrectionsAsync(string documentId, int pageNumber, IEnumerable<DocTrWordCorrectionRequest> corrections)
+        {
+            var correctionList = corrections.ToList();
+            if (correctionList.Count == 0)
+                return;
+
+            var words = await GetWordsAsync(documentId, pageNumber);
+            if (words.Count == 0)
+                throw new FileNotFoundException("No persisted words found for the specified document/page.");
+
+            var correctionMap = correctionList.ToDictionary(c => c.WordOrder, c => c.CorrectedText);
+
+            foreach (var word in words)
+            {
+                if (correctionMap.TryGetValue(word.WordOrder, out var correctedText))
+                    word.CorrectedText = correctedText;
+            }
+
+            await SaveWordsAsync(words);
+        }
+
         private string GetDocumentDirectory(string documentId)
         {
             var safeDocumentId = string.Concat(
@@ -71,6 +116,22 @@ namespace Ocr.Api.Services.Ocr
             );
 
             return Path.Combine(_persistenceRoot, safeDocumentId);
+        }
+
+        private string GetPagePath(string documentId, int pageNumber)
+        {
+            return Path.Combine(
+                GetDocumentDirectory(documentId),
+                $"page_{pageNumber:000}_page.json"
+            );
+        }
+
+        private string GetWordsPath(string documentId, int pageNumber)
+        {
+            return Path.Combine(
+                GetDocumentDirectory(documentId),
+                $"page_{pageNumber:000}_words.json"
+            );
         }
     }
 }

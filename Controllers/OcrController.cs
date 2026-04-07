@@ -177,12 +177,22 @@ namespace Ocr.Api.Controllers
 
                 string documentId = $"{safeName}_{DateTime.Now:yyyyMMddHHmmss}";
 
+                string pageImageDir = Path.Combine(rootDir, "page_images", documentId);
+                Directory.CreateDirectory(pageImageDir);
+
+                string savedPageImagePath = Path.Combine(
+                    pageImageDir,
+                    $"page_{pageNumber:000}{Path.GetExtension(processedImagePath)}"
+                );
+
+                System.IO.File.Copy(processedImagePath, savedPageImagePath, true);
+
                 var pageRecord = new Ocr.Api.Models.DocTrPageRecord
                 {
                     DocumentId = documentId,
                     PageNumber = pageNumber,
                     Engine = doctrResult.Engine,
-                    SourceImagePath = string.Empty,
+                    SourceImagePath = savedPageImagePath,
                     FullText = doctrResult.FullText,
                     Confidence = doctrResult.Confidence
                 };
@@ -212,7 +222,7 @@ namespace Ocr.Api.Controllers
                 );
 
                 var builtPdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
-                    processedImagePath,
+                    savedPageImagePath,
                     doctrResult.Words,
                     outputPdfPath
                 );
@@ -230,6 +240,7 @@ namespace Ocr.Api.Controllers
                     doctrResult.Confidence,
                     doctrResult.FullText,
                     WordCount = doctrResult.Words.Count,
+                    SourceImagePath = savedPageImagePath,
                     OutputPdf = builtPdf,
                     TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
                 });
@@ -240,6 +251,126 @@ namespace Ocr.Api.Controllers
                 if (cleanupTemps)
                     _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
             }
+        }
+
+        [HttpPost("doctr-rebuild-page")]
+        public async Task<IActionResult> RebuildDocTrPage(string documentId, int pageNumber)
+        {
+            var stopwatch = Stopwatch.StartNew();
+
+            if (string.IsNullOrWhiteSpace(documentId))
+                return BadRequest("documentId is required.");
+
+            if (pageNumber <= 0)
+                return BadRequest("pageNumber must be greater than zero.");
+
+            var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
+            if (page == null)
+                return NotFound("Page record not found.");
+
+            var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
+            if (words == null || words.Count == 0)
+                return NotFound("No persisted words found for the specified page.");
+
+            if (string.IsNullOrWhiteSpace(page.SourceImagePath) || !System.IO.File.Exists(page.SourceImagePath))
+                return NotFound("Source page image not found for rebuild.");
+
+            string rootDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Downloads",
+                "OCR Test Data",
+                "results",
+                "doctr_rebuild"
+            );
+
+            Directory.CreateDirectory(rootDir);
+
+            var wordsForPdf = words
+                .OrderBy(w => w.WordOrder)
+                .Select(w => new Ocr.Api.Models.DocTrWordResult
+                {
+                    Text = w.FinalText,
+                    Confidence = w.Confidence,
+                    XMin = w.XMin,
+                    YMin = w.YMin,
+                    XMax = w.XMax,
+                    YMax = w.YMax
+                })
+                .ToList();
+
+            var outputPdfPath = Path.Combine(
+                rootDir,
+                $"{documentId}_page_{pageNumber:000}_rebuilt.pdf"
+            );
+
+            var rebuiltPdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
+                page.SourceImagePath,
+                wordsForPdf,
+                outputPdfPath
+            );
+
+            stopwatch.Stop();
+
+            return Ok(new
+            {
+                DocumentId = documentId,
+                PageNumber = pageNumber,
+                WordCount = words.Count,
+                CorrectedWords = words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText)),
+                OutputPdf = rebuiltPdf,
+                TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
+            });
+        }
+
+        [HttpGet("doctr-page")]
+        public async Task<IActionResult> GetDocTrPage(string documentId, int pageNumber)
+        {
+            if (string.IsNullOrWhiteSpace(documentId))
+                return BadRequest("documentId is required.");
+
+            if (pageNumber <= 0)
+                return BadRequest("pageNumber must be greater than zero.");
+
+            var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
+            if (page == null)
+                return NotFound("Page record not found.");
+
+            var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
+
+            return Ok(new
+            {
+                Page = page,
+                Words = words
+            });
+        }
+
+        [HttpPost("doctr-corrections")]
+        [Consumes("application/json")]
+        public async Task<IActionResult> SaveDocTrCorrections(
+        [FromQuery] string documentId,
+        [FromQuery] int pageNumber,
+        [FromBody] List<Ocr.Api.Models.DocTrWordCorrectionRequest> corrections)
+        {
+            if (string.IsNullOrWhiteSpace(documentId))
+                return BadRequest("documentId is required.");
+
+            if (pageNumber <= 0)
+                return BadRequest("pageNumber must be greater than zero.");
+
+            if (corrections == null || corrections.Count == 0)
+                return BadRequest("No corrections submitted.");
+
+            await _docTrPersistenceService.SaveCorrectionsAsync(documentId, pageNumber, corrections);
+
+            var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
+
+            return Ok(new
+            {
+                DocumentId = documentId,
+                PageNumber = pageNumber,
+                CorrectedWords = words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText)),
+                Words = words
+            });
         }
 
         [HttpPost("doctr-test")]
