@@ -1,4 +1,4 @@
-﻿using Ocr.Api.Models;
+﻿using Ocr.Api.Models.Records;
 
 namespace Ocr.Api.Services.Ocr
 {
@@ -6,6 +6,7 @@ namespace Ocr.Api.Services.Ocr
     {
         Task SaveDocumentAsync(DocTrDocumentRecord documentRecord);
         Task<DocTrDocumentRecord?> GetDocumentAsync(string documentId);
+        Task<List<DocTrDocumentRecord>> GetDocumentsAsync(string? reviewStatus = null);
         Task SavePageAsync(DocTrPageRecord pageRecord);
         Task SaveWordsAsync(IEnumerable<DocTrWordRecord> wordRecords);
         Task<DocTrPageRecord?> GetPageAsync(string documentId, int pageNumber);

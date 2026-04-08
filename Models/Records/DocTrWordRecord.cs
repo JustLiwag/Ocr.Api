@@ -1,4 +1,4 @@
-﻿namespace Ocr.Api.Models
+﻿namespace Ocr.Api.Models.Records
 {
     public class DocTrWordRecord
     {

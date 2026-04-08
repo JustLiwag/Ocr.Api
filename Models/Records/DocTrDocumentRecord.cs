@@ -1,4 +1,4 @@
-﻿namespace Ocr.Api.Models
+﻿namespace Ocr.Api.Models.Records
 {
     public class DocTrDocumentRecord
     {
@@ -7,5 +7,11 @@
         public int PageCount { get; set; }
         public string Engine { get; set; } = "docTR";
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        public float? OcrConfidence { get; set; }
+        public string? Quality { get; set; }
+        public string? ReviewStatus { get; set; }
+        public int? ReviewedPages { get; set; }
+        public int? CorrectedWords { get; set; }
     }
-}   
+}

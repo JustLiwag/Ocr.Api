@@ -1,6 +1,6 @@
 ﻿using Microsoft.Data.SqlClient;
-using Ocr.Api.Models;
 using Ocr.Api.Data;
+using Ocr.Api.Models.Records;
 
 namespace Ocr.Api.Services.Ocr
 {
@@ -460,6 +460,80 @@ namespace Ocr.Api.Services.Ocr
                     ? DateTime.UtcNow
                     : Convert.ToDateTime(reader["createdAt"])
             };
+        }
+            
+        public async Task<List<DocTrDocumentRecord>> GetDocumentsAsync(string? reviewStatus = null)
+        {
+            string sql = @"
+            SELECT
+                d.documentId,
+                d.fileName,
+                d.pageCount,
+                d.engine,
+                d.createdAt,
+                CAST(AVG(CAST(w.confidence AS FLOAT)) * 100.0 AS FLOAT) AS ocrConfidence,
+                SUM(CASE WHEN w.correctedText IS NOT NULL AND LTRIM(RTRIM(w.correctedText)) <> '' THEN 1 ELSE 0 END) AS correctedWords,
+                SUM(CASE WHEN p.reviewStatus = 'Reviewed' THEN 1 ELSE 0 END) AS reviewedPages,
+                CASE
+                    WHEN SUM(CASE WHEN p.reviewStatus = 'NeedsRecheck' THEN 1 ELSE 0 END) > 0 THEN 'NeedsRecheck'
+                    WHEN SUM(CASE WHEN p.reviewStatus = 'Reviewed' THEN 1 ELSE 0 END) = COUNT(DISTINCT p.pageNumber) THEN 'Reviewed'
+                    WHEN SUM(CASE WHEN p.reviewStatus = 'Reviewed' THEN 1 ELSE 0 END) > 0 THEN 'PartiallyReviewed'
+                    ELSE 'NotReviewed'
+                END AS reviewStatus
+            FROM OCR_Document d
+            LEFT JOIN OCR_Page p
+                ON d.documentId = p.documentId
+            LEFT JOIN OCR_Word w
+                ON p.documentId = w.documentId
+               AND p.pageNumber = w.pageNumber
+            WHERE (@reviewStatus IS NULL OR @reviewStatus = '' OR p.reviewStatus = @reviewStatus)
+            GROUP BY d.documentId, d.fileName, d.pageCount, d.engine, d.createdAt
+            ORDER BY d.createdAt DESC";
+
+            var documents = new List<DocTrDocumentRecord>();
+
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@reviewStatus", (object?)reviewStatus ?? DBNull.Value);
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                float? ocrConfidence = reader["ocrConfidence"] == DBNull.Value
+                    ? null
+                    : Convert.ToSingle(reader["ocrConfidence"]);
+
+                string? quality = null;
+                if (ocrConfidence.HasValue)
+                {
+                    if (ocrConfidence.Value >= 90)
+                        quality = "Excellent";
+                    else if (ocrConfidence.Value >= 75)
+                        quality = "Good";
+                    else if (ocrConfidence.Value >= 50)
+                        quality = "Fair";
+                    else
+                        quality = "Poor";
+                }
+
+                documents.Add(new DocTrDocumentRecord
+                {
+                    DocumentId = reader["documentId"].ToString() ?? string.Empty,
+                    FileName = reader["fileName"].ToString() ?? string.Empty,
+                    PageCount = Convert.ToInt32(reader["pageCount"]),
+                    Engine = reader["engine"].ToString() ?? "docTR",
+                    CreatedAt = Convert.ToDateTime(reader["createdAt"]),
+                    OcrConfidence = ocrConfidence,
+                    Quality = quality,
+                    ReviewStatus = reader["reviewStatus"] == DBNull.Value ? "NotReviewed" : reader["reviewStatus"].ToString(),
+                    ReviewedPages = reader["reviewedPages"] == DBNull.Value ? 0 : Convert.ToInt32(reader["reviewedPages"]),
+                    CorrectedWords = reader["correctedWords"] == DBNull.Value ? 0 : Convert.ToInt32(reader["correctedWords"])
+                });
+            }
+
+            return documents;
         }
 
         public async Task<List<DocTrWordCorrectionHistoryRecord>> GetCorrectionHistoryAsync(string documentId, int pageNumber, int wordOrder)
