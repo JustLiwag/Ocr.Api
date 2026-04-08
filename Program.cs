@@ -37,6 +37,8 @@ builder.Services.AddScoped<IDocTrPersistenceService, DocTrPersistenceService>();
 builder.Services.AddScoped<ISearchablePdfBuilderService, PdfSharpSearchablePdfBuilderService>();
 // OCR Db
 builder.Services.AddScoped<IDbConnectionFactory, SqlConnectionFactory>();
+// Token Normalization
+builder.Services.AddScoped<IDocTrTokenNormalizationService, DocTrTokenNormalizationService>();
 
 
 

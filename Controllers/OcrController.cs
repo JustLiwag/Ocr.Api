@@ -33,6 +33,7 @@ namespace Ocr.Api.Controllers
         private readonly IDocTrService _docTrService;
         private readonly ISearchablePdfBuilderService _searchablePdfBuilderService;
         private readonly IDocTrPersistenceService _docTrPersistenceService;
+        private readonly IDocTrTokenNormalizationService _docTrTokenNormalizationService;
 
         public OcrController(
             ITempFileService tempFileService,
@@ -45,7 +46,8 @@ namespace Ocr.Api.Controllers
             IOcrPipelineService ocrPipelineService,
             IDocTrService docTrService,
             ISearchablePdfBuilderService searchablePdfBuilderService,
-            IDocTrPersistenceService docTrPersistenceService)
+            IDocTrPersistenceService docTrPersistenceService,
+            IDocTrTokenNormalizationService docTrTokenNormalizationService)
         {
             _tempFileService = tempFileService;
             _pdfTextDetector = pdfTextDetector;
@@ -58,6 +60,7 @@ namespace Ocr.Api.Controllers
             _docTrService = docTrService;
             _searchablePdfBuilderService = searchablePdfBuilderService;
             _docTrPersistenceService = docTrPersistenceService;
+            _docTrTokenNormalizationService = docTrTokenNormalizationService;
         }
 
         [HttpPost("doctr-build-page")]
@@ -221,18 +224,21 @@ namespace Ocr.Api.Controllers
 
                 await _docTrPersistenceService.SavePageAsync(pageRecord);
 
-                var wordRecords = doctrResult.Words
-                    .Select((word, index) => new Ocr.Api.Models.Records.DocTrWordRecord
+                var normalizedTokens = _docTrTokenNormalizationService.NormalizeWords(doctrResult.Words);
+
+                var wordRecords = normalizedTokens
+                    .Select((token, index) => new Ocr.Api.Models.Records.DocTrWordRecord
                     {
                         DocumentId = documentId,
                         PageNumber = pageNumber,
                         WordOrder = index + 1,
-                        RawText = word.Text,
-                        Confidence = word.Confidence,
-                        XMin = word.XMin,
-                        YMin = word.YMin,
-                        XMax = word.XMax,
-                        YMax = word.YMax
+                        RawText = token.Text,
+                        Confidence = token.Confidence,
+                        XMin = token.XMin,
+                        YMin = token.YMin,
+                        XMax = token.XMax,
+                        YMax = token.YMax,
+                        TokenType = token.TokenType
                     })
                     .ToList();
 
@@ -243,9 +249,21 @@ namespace Ocr.Api.Controllers
                     $"{safeName}_page_{pageNumber:000}_doctr.pdf"
                 );
 
+                var normalizedWordsForPdf = normalizedTokens
+                .Select(t => new Ocr.Api.Models.DocTrWordResult
+                {
+                    Text = t.Text,
+                    Confidence = t.Confidence,
+                    XMin = t.XMin,
+                    YMin = t.YMin,
+                    XMax = t.XMax,
+                    YMax = t.YMax
+                })
+                .ToList();
+
                 var builtPdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
                     savedPageImagePath,
-                    doctrResult.Words,
+                    normalizedWordsForPdf,
                     outputPdfPath
                 );
 
@@ -410,7 +428,8 @@ namespace Ocr.Api.Controllers
                     XMin = w.XMin,
                     YMin = w.YMin,
                     XMax = w.XMax,
-                    YMax = w.YMax
+                    YMax = w.YMax,
+                    TokenType = w.TokenType
                 }).ToList()
             };
 
@@ -452,7 +471,8 @@ namespace Ocr.Api.Controllers
                     XMin = w.XMin,
                     YMin = w.YMin,
                     XMax = w.XMax,
-                    YMax = w.YMax
+                    YMax = w.YMax,
+                    TokenType = w.TokenType
                 }).ToList()
             };
 
@@ -679,18 +699,21 @@ namespace Ocr.Api.Controllers
 
                     await _docTrPersistenceService.SavePageAsync(pageRecord);
 
-                    var wordRecords = doctrResult.Words
-                        .Select((word, index) => new Ocr.Api.Models.Records.    DocTrWordRecord
+                    var normalizedTokens = _docTrTokenNormalizationService.NormalizeWords(doctrResult.Words);
+
+                    var wordRecords = normalizedTokens
+                        .Select((token, index) => new Ocr.Api.Models.Records.DocTrWordRecord
                         {
                             DocumentId = documentId,
                             PageNumber = pageNumber,
                             WordOrder = index + 1,
-                            RawText = word.Text,
-                            Confidence = word.Confidence,
-                            XMin = word.XMin,
-                            YMin = word.YMin,
-                            XMax = word.XMax,
-                            YMax = word.YMax
+                            RawText = token.Text,
+                            Confidence = token.Confidence,
+                            XMin = token.XMin,
+                            YMin = token.YMin,
+                            XMax = token.XMax,
+                            YMax = token.YMax,
+                            TokenType = token.TokenType
                         })
                         .ToList();
 
@@ -701,16 +724,28 @@ namespace Ocr.Api.Controllers
                         $"{documentId}_page_{pageNumber:000}.pdf"
                     );
 
+                    var normalizedWordsForPdf = normalizedTokens
+                        .Select(t => new Ocr.Api.Models.DocTrWordResult
+                        {
+                            Text = t.Text,
+                            Confidence = t.Confidence,
+                            XMin = t.XMin,
+                            YMin = t.YMin,
+                            XMax = t.XMax,
+                            YMax = t.YMax
+                        })
+                        .ToList();
+
                     var builtPagePdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
                         savedPageImagePath,
-                        doctrResult.Words,
+                        normalizedWordsForPdf,
                         pagePdfPath
                     );
 
                     pagePdfPaths.Add(builtPagePdf);
 
-                    float pageConfidence = doctrResult.Words.Count > 0
-                        ? doctrResult.Words.Average(w => w.Confidence) * 100f
+                    float pageConfidence = normalizedTokens.Count > 0
+                        ? normalizedTokens.Average(t => t.Confidence) * 100f
                         : doctrResult.Confidence * 100f;
 
                     pageConfidenceScores.Add(pageConfidence);
@@ -970,6 +1005,27 @@ namespace Ocr.Api.Controllers
                     ReviewedAt = page.ReviewedAt,
                     CreatedAt = page.CreatedAt
                 }
+            };
+
+            return Ok(response);
+        }
+
+        [HttpGet("doctr-suggestions")]
+        public async Task<IActionResult> GetDocTrSuggestions(string text, int top = 5)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return BadRequest("text is required.");
+
+            if (top <= 0)
+                top = 5;
+
+            var suggestions = await _docTrPersistenceService.GetCorrectionSuggestionsAsync(text, top);
+
+            var response = new Ocr.Api.Models.Api.DocTrCorrectionSuggestionsResponseDto
+            {
+                RawText = text,
+                Count = suggestions.Count,
+                Suggestions = suggestions
             };
 
             return Ok(response);

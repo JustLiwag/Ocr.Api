@@ -1,6 +1,7 @@
 ﻿using Microsoft.Data.SqlClient;
 using Ocr.Api.Data;
 using Ocr.Api.Models.Records;
+using Ocr.Api.Models.Api;
 
 namespace Ocr.Api.Services.Ocr
 {
@@ -126,7 +127,8 @@ namespace Ocr.Api.Services.Ocr
                 xMin,
                 yMin,
                 xMax,
-                yMax
+                yMax,
+                tokenType
             )
             VALUES
             (
@@ -139,7 +141,8 @@ namespace Ocr.Api.Services.Ocr
                 @xMin,
                 @yMin,
                 @xMax,
-                @yMax
+                @yMax,
+                @tokenType
             )";
 
             await using var conn = _dbConnectionFactory.CreateConnection();
@@ -168,6 +171,7 @@ namespace Ocr.Api.Services.Ocr
                     insertCmd.Parameters.AddWithValue("@yMin", word.YMin);
                     insertCmd.Parameters.AddWithValue("@xMax", word.XMax);
                     insertCmd.Parameters.AddWithValue("@yMax", word.YMax);
+                    insertCmd.Parameters.AddWithValue("@tokenType", word.TokenType);
 
                     await insertCmd.ExecuteNonQueryAsync();
                 }
@@ -219,7 +223,7 @@ namespace Ocr.Api.Services.Ocr
         public async Task<List<DocTrWordRecord>> GetWordsAsync(string documentId, int pageNumber)
         {
             const string sql = @"
-            SELECT documentId, pageNumber, wordOrder, rawText, correctedText, confidence, xMin, yMin, xMax, yMax, createdAt
+            SELECT documentId, pageNumber, wordOrder, rawText, correctedText, confidence, xMin, yMin, xMax, yMax, tokenType, createdAt
             FROM OCR_Word
             WHERE documentId = @documentId
               AND pageNumber = @pageNumber
@@ -249,6 +253,7 @@ namespace Ocr.Api.Services.Ocr
                     YMin = Convert.ToSingle(reader["yMin"]),
                     XMax = Convert.ToSingle(reader["xMax"]),
                     YMax = Convert.ToSingle(reader["yMax"]),
+                    TokenType = reader["tokenType"] == DBNull.Value ? "Word" : reader["tokenType"].ToString() ?? "Word",
                     CreatedAt = reader["createdAt"] == DBNull.Value ? DateTime.UtcNow : Convert.ToDateTime(reader["createdAt"])
                 });
             }
@@ -598,6 +603,48 @@ namespace Ocr.Api.Services.Ocr
             cmd.Parameters.AddWithValue("@reviewedBy", (object?)reviewedBy ?? DBNull.Value);
 
             await cmd.ExecuteNonQueryAsync();
+        }
+
+        public async Task<List<DocTrCorrectionSuggestionDto>> GetCorrectionSuggestionsAsync(string rawText, int top = 5)
+        {
+            const string sql = @"
+            SELECT TOP (@top)
+                h.oldText AS rawText,
+                h.newText AS suggestedText,
+                COUNT(*) AS occurrences
+            FROM OCR_WordCorrectionHistory h
+            INNER JOIN OCR_Word w
+                ON h.documentId = w.documentId
+               AND h.pageNumber = w.pageNumber
+               AND h.wordOrder = w.wordOrder
+            WHERE h.oldText = @rawText
+              AND h.newText IS NOT NULL
+              AND LTRIM(RTRIM(h.newText)) <> ''
+              AND w.tokenType = 'Word'
+            GROUP BY h.oldText, h.newText
+            ORDER BY COUNT(*) DESC, h.newText ASC";
+
+            var suggestions = new List<DocTrCorrectionSuggestionDto>();
+
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+
+            await using var cmd = new SqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@rawText", rawText);
+            cmd.Parameters.AddWithValue("@top", top);
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                suggestions.Add(new DocTrCorrectionSuggestionDto
+                {
+                    RawText = reader["rawText"].ToString() ?? string.Empty,
+                    SuggestedText = reader["suggestedText"].ToString() ?? string.Empty,
+                    Occurrences = Convert.ToInt32(reader["occurrences"])
+                });
+            }
+
+            return suggestions;
         }
     }
 }

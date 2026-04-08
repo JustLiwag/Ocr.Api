@@ -1,4 +1,5 @@
-﻿using Ocr.Api.Models.Records;
+﻿using Ocr.Api.Models.Api;
+using Ocr.Api.Models.Records;
 
 namespace Ocr.Api.Services.Ocr
 {
@@ -15,6 +16,7 @@ namespace Ocr.Api.Services.Ocr
         Task<List<int>> GetPageNumbersAsync(string documentId);
         Task<List<DocTrWordCorrectionHistoryRecord>> GetCorrectionHistoryAsync(string documentId, int pageNumber, int wordOrder);
         Task UpdatePageReviewAsync(string documentId, int pageNumber, string reviewStatus, string? reviewedBy);
+        Task<List<DocTrCorrectionSuggestionDto>> GetCorrectionSuggestionsAsync(string rawText, int top = 5);
 
     }
 }
