@@ -17,6 +17,7 @@ namespace Ocr.Api.Services.Ocr
         Task<List<DocTrWordCorrectionHistoryRecord>> GetCorrectionHistoryAsync(string documentId, int pageNumber, int wordOrder);
         Task UpdatePageReviewAsync(string documentId, int pageNumber, string reviewStatus, string? reviewedBy);
         Task<List<DocTrCorrectionSuggestionDto>> GetCorrectionSuggestionsAsync(string rawText, int top = 5);
+        Task<Dictionary<string, List<DocTrCorrectionSuggestionDto>>> GetCorrectionSuggestionsBatchAsync(IEnumerable<string> rawTexts, int top = 5);
 
     }
 }

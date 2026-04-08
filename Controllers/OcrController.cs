@@ -34,6 +34,7 @@ namespace Ocr.Api.Controllers
         private readonly ISearchablePdfBuilderService _searchablePdfBuilderService;
         private readonly IDocTrPersistenceService _docTrPersistenceService;
         private readonly IDocTrTokenNormalizationService _docTrTokenNormalizationService;
+        private readonly IDocTrTextNormalizationService _docTrTextNormalizationService;
 
         public OcrController(
             ITempFileService tempFileService,
@@ -47,7 +48,8 @@ namespace Ocr.Api.Controllers
             IDocTrService docTrService,
             ISearchablePdfBuilderService searchablePdfBuilderService,
             IDocTrPersistenceService docTrPersistenceService,
-            IDocTrTokenNormalizationService docTrTokenNormalizationService)
+            IDocTrTokenNormalizationService docTrTokenNormalizationService,
+            IDocTrTextNormalizationService docTrTextNormalizationService)
         {
             _tempFileService = tempFileService;
             _pdfTextDetector = pdfTextDetector;
@@ -61,6 +63,7 @@ namespace Ocr.Api.Controllers
             _searchablePdfBuilderService = searchablePdfBuilderService;
             _docTrPersistenceService = docTrPersistenceService;
             _docTrTokenNormalizationService = docTrTokenNormalizationService;
+            _docTrTextNormalizationService = docTrTextNormalizationService;
         }
 
         [HttpPost("doctr-build-page")]
@@ -233,6 +236,7 @@ namespace Ocr.Api.Controllers
                         PageNumber = pageNumber,
                         WordOrder = index + 1,
                         RawText = token.Text,
+                        NormalizedText = _docTrTextNormalizationService.NormalizeForSuggestion(token.Text),
                         Confidence = token.Confidence,
                         XMin = token.XMin,
                         YMin = token.YMin,
@@ -383,13 +387,16 @@ namespace Ocr.Api.Controllers
         }
 
         [HttpGet("doctr-page")]
-        public async Task<IActionResult> GetDocTrPage(string documentId, int pageNumber)
+        public async Task<IActionResult> GetDocTrPage(string documentId, int pageNumber, bool includeSuggestions = false, int suggestionTop = 3)
         {
             if (string.IsNullOrWhiteSpace(documentId))
                 return BadRequest("documentId is required.");
 
             if (pageNumber <= 0)
                 return BadRequest("pageNumber must be greater than zero.");
+
+            if (suggestionTop <= 0)
+                suggestionTop = 3;
 
             var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
             if (page == null)
@@ -400,6 +407,41 @@ namespace Ocr.Api.Controllers
             float averageConfidence = words.Count > 0
                 ? words.Average(w => w.Confidence) * 100f
                 : page.Confidence * 100f;
+
+            Dictionary<string, List<Ocr.Api.Models.Api.DocTrCorrectionSuggestionDto>> suggestionMap =
+                new Dictionary<string, List<Ocr.Api.Models.Api.DocTrCorrectionSuggestionDto>>(StringComparer.Ordinal);
+
+            if (includeSuggestions)
+            {
+                var distinctWordTokens = words
+                    .Where(w => string.Equals(w.TokenType, "Word", StringComparison.OrdinalIgnoreCase))
+                    .Select(w => w.RawText)
+                    .Where(t => !string.IsNullOrWhiteSpace(t))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                suggestionMap = await _docTrPersistenceService.GetCorrectionSuggestionsBatchAsync(distinctWordTokens, suggestionTop);
+            }
+
+            var wordDtos = words.Select(w => new Ocr.Api.Models.Api.DocTrWordDto
+            {
+                WordOrder = w.WordOrder,
+                RawText = w.RawText,
+                CorrectedText = w.CorrectedText,
+                FinalText = w.FinalText,
+                Confidence = w.Confidence,
+                XMin = w.XMin,
+                YMin = w.YMin,
+                XMax = w.XMax,
+                YMax = w.YMax,
+                TokenType = w.TokenType,
+                Suggestions =
+                    includeSuggestions &&
+                    string.Equals(w.TokenType, "Word", StringComparison.OrdinalIgnoreCase) &&
+                    suggestionMap.TryGetValue(w.RawText, out var suggestions)
+                        ? suggestions
+                        : new List<Ocr.Api.Models.Api.DocTrCorrectionSuggestionDto>()
+            }).ToList();
 
             var response = new Ocr.Api.Models.Api.DocTrPageResponseDto
             {
@@ -418,19 +460,7 @@ namespace Ocr.Api.Controllers
                     ReviewedAt = page.ReviewedAt,
                     CreatedAt = page.CreatedAt
                 },
-                Words = words.Select(w => new Ocr.Api.Models.Api.DocTrWordDto
-                {
-                    WordOrder = w.WordOrder,
-                    RawText = w.RawText,
-                    CorrectedText = w.CorrectedText,
-                    FinalText = w.FinalText,
-                    Confidence = w.Confidence,
-                    XMin = w.XMin,
-                    YMin = w.YMin,
-                    XMax = w.XMax,
-                    YMax = w.YMax,
-                    TokenType = w.TokenType
-                }).ToList()
+                Words = wordDtos
             };
 
             return Ok(response);
@@ -708,6 +738,7 @@ namespace Ocr.Api.Controllers
                             PageNumber = pageNumber,
                             WordOrder = index + 1,
                             RawText = token.Text,
+                            NormalizedText = _docTrTextNormalizationService.NormalizeForSuggestion(token.Text),
                             Confidence = token.Confidence,
                             XMin = token.XMin,
                             YMin = token.YMin,
@@ -1029,7 +1060,7 @@ namespace Ocr.Api.Controllers
             };
 
             return Ok(response);
-        }
+        }   
         /*
         [HttpPost("doctr-test")]
         [Consumes("multipart/form-data")]

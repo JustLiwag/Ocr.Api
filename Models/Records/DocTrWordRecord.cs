@@ -14,6 +14,7 @@
         public float XMax { get; set; }
         public float YMax { get; set; }
         public string TokenType { get; set; } = "Word";
+        public string NormalizedText { get; set; } = string.Empty;
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }

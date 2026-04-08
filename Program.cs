@@ -39,6 +39,8 @@ builder.Services.AddScoped<ISearchablePdfBuilderService, PdfSharpSearchablePdfBu
 builder.Services.AddScoped<IDbConnectionFactory, SqlConnectionFactory>();
 // Token Normalization
 builder.Services.AddScoped<IDocTrTokenNormalizationService, DocTrTokenNormalizationService>();
+// Suggestion Normalization
+builder.Services.AddScoped<IDocTrTextNormalizationService, DocTrTextNormalizationService>();
 
 
 

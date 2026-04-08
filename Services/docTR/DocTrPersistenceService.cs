@@ -8,10 +8,12 @@ namespace Ocr.Api.Services.Ocr
     public class DocTrPersistenceService : IDocTrPersistenceService
     {
         private readonly IDbConnectionFactory _dbConnectionFactory;
+        private readonly IDocTrTextNormalizationService _docTrTextNormalizationService;
 
-        public DocTrPersistenceService(IDbConnectionFactory dbConnectionFactory)
+        public DocTrPersistenceService(IDbConnectionFactory dbConnectionFactory, IDocTrTextNormalizationService docTrTextNormalizationService)
         {
             _dbConnectionFactory = dbConnectionFactory;
+            _docTrTextNormalizationService = docTrTextNormalizationService;
         }
 
         public async Task SaveDocumentAsync(DocTrDocumentRecord documentRecord)
@@ -128,7 +130,8 @@ namespace Ocr.Api.Services.Ocr
                 yMin,
                 xMax,
                 yMax,
-                tokenType
+                tokenType,
+                normalizedText
             )
             VALUES
             (
@@ -142,7 +145,8 @@ namespace Ocr.Api.Services.Ocr
                 @yMin,
                 @xMax,
                 @yMax,
-                @tokenType
+                @tokenType,
+                @normalizedText
             )";
 
             await using var conn = _dbConnectionFactory.CreateConnection();
@@ -172,6 +176,7 @@ namespace Ocr.Api.Services.Ocr
                     insertCmd.Parameters.AddWithValue("@xMax", word.XMax);
                     insertCmd.Parameters.AddWithValue("@yMax", word.YMax);
                     insertCmd.Parameters.AddWithValue("@tokenType", word.TokenType);
+                    insertCmd.Parameters.AddWithValue("@normalizedText", (object?)word.NormalizedText ?? DBNull.Value);
 
                     await insertCmd.ExecuteNonQueryAsync();
                 }
@@ -223,7 +228,7 @@ namespace Ocr.Api.Services.Ocr
         public async Task<List<DocTrWordRecord>> GetWordsAsync(string documentId, int pageNumber)
         {
             const string sql = @"
-            SELECT documentId, pageNumber, wordOrder, rawText, correctedText, confidence, xMin, yMin, xMax, yMax, tokenType, createdAt
+            SELECT documentId, pageNumber, wordOrder, rawText, correctedText, confidence, xMin, yMin, xMax, yMax, tokenType, normalizedText, createdAt
             FROM OCR_Word
             WHERE documentId = @documentId
               AND pageNumber = @pageNumber
@@ -254,6 +259,7 @@ namespace Ocr.Api.Services.Ocr
                     XMax = Convert.ToSingle(reader["xMax"]),
                     YMax = Convert.ToSingle(reader["yMax"]),
                     TokenType = reader["tokenType"] == DBNull.Value ? "Word" : reader["tokenType"].ToString() ?? "Word",
+                    NormalizedText = reader["normalizedText"] == DBNull.Value ? string.Empty : reader["normalizedText"].ToString() ?? string.Empty,
                     CreatedAt = reader["createdAt"] == DBNull.Value ? DateTime.UtcNow : Convert.ToDateTime(reader["createdAt"])
                 });
             }
@@ -281,6 +287,7 @@ namespace Ocr.Api.Services.Ocr
                 pageNumber,
                 wordOrder,
                 oldText,
+                normalizedOldText,
                 newText,
                 correctedBy
             )
@@ -290,6 +297,7 @@ namespace Ocr.Api.Services.Ocr
                 @pageNumber,
                 @wordOrder,
                 @oldText,
+                @normalizedOldText,
                 @newText,
                 @correctedBy
             )";
@@ -352,11 +360,15 @@ namespace Ocr.Api.Services.Ocr
                         : existingCorrectedText;
 
                     string newFinalText = correction.CorrectedText ?? string.Empty;
+                    string normalizedCurrentFinalText = _docTrTextNormalizationService.NormalizeForSuggestion(currentFinalText);
+                    string normalizedNewFinalText = _docTrTextNormalizationService.NormalizeForSuggestion(newFinalText);
 
-                    if (string.Equals(currentFinalText, newFinalText, StringComparison.Ordinal))
+                    if (string.Equals(normalizedCurrentFinalText, normalizedNewFinalText, StringComparison.Ordinal))
                         continue;
 
                     hasRealChanges = true;
+
+                    string normalizedOldText = normalizedCurrentFinalText;
 
                     await using (var historyCmd = new SqlCommand(insertHistorySql, conn, (SqlTransaction)tx))
                     {
@@ -364,6 +376,7 @@ namespace Ocr.Api.Services.Ocr
                         historyCmd.Parameters.AddWithValue("@pageNumber", pageNumber);
                         historyCmd.Parameters.AddWithValue("@wordOrder", correction.WordOrder);
                         historyCmd.Parameters.AddWithValue("@oldText", (object?)currentFinalText ?? DBNull.Value);
+                        historyCmd.Parameters.AddWithValue("@normalizedOldText", normalizedOldText);
                         historyCmd.Parameters.AddWithValue("@newText", (object?)newFinalText ?? DBNull.Value);
                         historyCmd.Parameters.AddWithValue("@correctedBy", (object?)correction.CorrectedBy ?? DBNull.Value);
 
@@ -607,9 +620,11 @@ namespace Ocr.Api.Services.Ocr
 
         public async Task<List<DocTrCorrectionSuggestionDto>> GetCorrectionSuggestionsAsync(string rawText, int top = 5)
         {
+            string normalized = _docTrTextNormalizationService.NormalizeForSuggestion(rawText);
+
             const string sql = @"
             SELECT TOP (@top)
-                h.oldText AS rawText,
+                h.normalizedOldText AS rawText,
                 h.newText AS suggestedText,
                 COUNT(*) AS occurrences
             FROM OCR_WordCorrectionHistory h
@@ -617,11 +632,11 @@ namespace Ocr.Api.Services.Ocr
                 ON h.documentId = w.documentId
                AND h.pageNumber = w.pageNumber
                AND h.wordOrder = w.wordOrder
-            WHERE h.oldText = @rawText
+            WHERE h.normalizedOldText = @normalizedOldText
               AND h.newText IS NOT NULL
               AND LTRIM(RTRIM(h.newText)) <> ''
               AND w.tokenType = 'Word'
-            GROUP BY h.oldText, h.newText
+            GROUP BY h.normalizedOldText, h.newText
             ORDER BY COUNT(*) DESC, h.newText ASC";
 
             var suggestions = new List<DocTrCorrectionSuggestionDto>();
@@ -630,7 +645,7 @@ namespace Ocr.Api.Services.Ocr
             await conn.OpenAsync();
 
             await using var cmd = new SqlCommand(sql, conn);
-            cmd.Parameters.AddWithValue("@rawText", rawText);
+            cmd.Parameters.AddWithValue("@normalizedOldText", normalized);
             cmd.Parameters.AddWithValue("@top", top);
 
             await using var reader = await cmd.ExecuteReaderAsync();
@@ -638,13 +653,92 @@ namespace Ocr.Api.Services.Ocr
             {
                 suggestions.Add(new DocTrCorrectionSuggestionDto
                 {
-                    RawText = reader["rawText"].ToString() ?? string.Empty,
+                    RawText = rawText,
                     SuggestedText = reader["suggestedText"].ToString() ?? string.Empty,
                     Occurrences = Convert.ToInt32(reader["occurrences"])
                 });
             }
 
             return suggestions;
+        }
+
+        public async Task<Dictionary<string, List<DocTrCorrectionSuggestionDto>>> GetCorrectionSuggestionsBatchAsync(IEnumerable<string> rawTexts, int top = 5)
+        {
+            var keys = rawTexts
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => _docTrTextNormalizationService.NormalizeForSuggestion(x))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+            var result = keys.ToDictionary(
+                k => k,
+                _ => new List<DocTrCorrectionSuggestionDto>(),
+                StringComparer.Ordinal
+            );
+
+            if (keys.Count == 0)
+                return result;
+
+            const string sql = @"
+            WITH RankedSuggestions AS
+            (
+                SELECT
+                    h.normalizedOldText AS rawText,
+                    h.newText AS suggestedText,
+                    COUNT(*) AS occurrences,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY h.normalizedOldText
+                        ORDER BY COUNT(*) DESC, h.newText ASC
+                    ) AS rn
+                FROM OCR_WordCorrectionHistory h
+                INNER JOIN OCR_Word w
+                    ON h.documentId = w.documentId
+                   AND h.pageNumber = w.pageNumber
+                   AND h.wordOrder = w.wordOrder
+                WHERE h.normalizedOldText IN ({0})
+                  AND h.newText IS NOT NULL
+                  AND LTRIM(RTRIM(h.newText)) <> ''
+                  AND w.tokenType = 'Word'
+                GROUP BY h.normalizedOldText, h.newText
+            )
+            SELECT rawText, suggestedText, occurrences
+            FROM RankedSuggestions
+            WHERE rn <= @top
+            ORDER BY rawText, occurrences DESC, suggestedText ASC;";
+
+            await using var conn = _dbConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+
+            var parameterNames = new List<string>();
+            for (int i = 0; i < keys.Count; i++)
+                parameterNames.Add($"@rawText{i}");
+
+            string finalSql = string.Format(sql, string.Join(", ", parameterNames));
+
+            await using var cmd = new SqlCommand(finalSql, conn);
+            cmd.Parameters.AddWithValue("@top", top);
+
+            for (int i = 0; i < keys.Count; i++)
+                cmd.Parameters.AddWithValue(parameterNames[i], keys[i]);
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                string rawText = reader["rawText"].ToString() ?? string.Empty;
+
+                if (!result.ContainsKey(rawText))
+                    result[rawText] = new List<DocTrCorrectionSuggestionDto>();
+
+                result[rawText].Add(new DocTrCorrectionSuggestionDto
+                {
+                    RawText = rawText,
+                    SuggestedText = reader["suggestedText"].ToString() ?? string.Empty,
+                    Occurrences = Convert.ToInt32(reader["occurrences"])
+                });
+            }
+
+            return result;
         }
     }
 }

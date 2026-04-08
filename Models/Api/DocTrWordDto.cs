@@ -12,5 +12,6 @@
         public float XMax { get; set; }
         public float YMax { get; set; }
         public string TokenType { get; set; } = "Word";
+        public List<DocTrCorrectionSuggestionDto> Suggestions { get; set; } = new();
     }
 }
