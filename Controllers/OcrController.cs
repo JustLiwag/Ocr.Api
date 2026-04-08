@@ -126,7 +126,7 @@ namespace Ocr.Api.Controllers
                 bool cleanupTemps = _config.GetValue<bool>("Ocr:CleanupIntermediateFiles");
                 if (cleanupTemps)
                     _tempFileService.DeleteDirectoryIfExists(tempJobDir, true);
-            }
+            }   
         }
 
         [HttpPost("doctr-build-pdf-page")]
@@ -308,7 +308,7 @@ namespace Ocr.Api.Controllers
         }
 
         [HttpPost("doctr-rebuild-page")]
-        public async Task<IActionResult> RebuildDocTrPage(string documentId, int pageNumber)
+        public async Task<IActionResult> RebuildDocTrPage(string documentId, int pageNumber, bool useSuggestions = false, int minSuggestionOccurrences = 3)
         {
             var stopwatch = Stopwatch.StartNew();
 
@@ -317,6 +317,9 @@ namespace Ocr.Api.Controllers
 
             if (pageNumber <= 0)
                 return BadRequest("pageNumber must be greater than zero.");
+
+            if (minSuggestionOccurrences <= 0)
+                minSuggestionOccurrences = 3;
 
             var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
             if (page == null)
@@ -339,22 +342,36 @@ namespace Ocr.Api.Controllers
 
             Directory.CreateDirectory(rootDir);
 
-            var wordsForPdf = words
-                .OrderBy(w => w.WordOrder)
-                .Select(w => new Ocr.Api.Models.DocTrWordResult
+            var wordsForPdf = new List<Ocr.Api.Models.DocTrWordResult>();
+            int autoSuggestedWords = 0;
+
+            foreach (var w in words.OrderBy(w => w.WordOrder))
+            {
+                string textToUse = await GetSuggestedTextOrFallbackAsync(w, useSuggestions, minSuggestionOccurrences);
+
+                if (string.IsNullOrWhiteSpace(w.CorrectedText) &&
+                    !string.Equals(textToUse, w.RawText, StringComparison.Ordinal) &&
+                    string.Equals(w.TokenType, "Word", StringComparison.OrdinalIgnoreCase))
                 {
-                    Text = w.FinalText,
+                    autoSuggestedWords++;
+                }
+
+                wordsForPdf.Add(new Ocr.Api.Models.DocTrWordResult
+                {
+                    Text = textToUse,
                     Confidence = w.Confidence,
                     XMin = w.XMin,
                     YMin = w.YMin,
                     XMax = w.XMax,
                     YMax = w.YMax
-                })
-                .ToList();
+                });
+            }
+
+            var outputSuffix = useSuggestions ? "_rebuilt_suggested" : "_rebuilt";
 
             var outputPdfPath = Path.Combine(
                 rootDir,
-                $"{documentId}_page_{pageNumber:000}_rebuilt.pdf"
+                $"{documentId}_page_{pageNumber:000}{outputSuffix}.pdf"
             );
 
             var rebuiltPdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
@@ -383,7 +400,20 @@ namespace Ocr.Api.Controllers
                 TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
             };
 
-            return Ok(response);
+            return Ok(new
+            {
+                response.DocumentId,
+                response.PageNumber,
+                response.WordCount,
+                response.CorrectedWords,
+                AutoSuggestedWords = autoSuggestedWords,
+                UseSuggestions = useSuggestions,
+                MinSuggestionOccurrences = minSuggestionOccurrences,
+                response.OcrConfidence,
+                response.Quality,
+                response.OutputPdf,
+                response.TimeElapsed
+            });
         }
 
         [HttpGet("doctr-page")]
@@ -1392,6 +1422,26 @@ namespace Ocr.Api.Controllers
                 System.IO.File.Copy(sourceImagePath, targetPath, true);
 
             return targetPath;
+        }
+
+        private async Task<string> GetSuggestedTextOrFallbackAsync(DocTrWordRecord word, bool useSuggestions, int minSuggestionOccurrences)
+        {
+            if (!string.IsNullOrWhiteSpace(word.CorrectedText))
+                return word.CorrectedText;
+
+            if (!useSuggestions)
+                return word.RawText;
+
+            if (!string.Equals(word.TokenType, "Word", StringComparison.OrdinalIgnoreCase))
+                return word.RawText;
+
+            var suggestions = await _docTrPersistenceService.GetCorrectionSuggestionsAsync(word.RawText, 1);
+
+            var topSuggestion = suggestions.FirstOrDefault();
+            if (topSuggestion != null && topSuggestion.Occurrences >= minSuggestionOccurrences)
+                return topSuggestion.SuggestedText;
+
+            return word.RawText;
         }
 
         private static string GetQualityLabel(float overallConfidence)
