@@ -394,26 +394,16 @@ namespace Ocr.Api.Controllers
                 PageNumber = pageNumber,
                 WordCount = words.Count,
                 CorrectedWords = words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText)),
+                AutoSuggestedWords = autoSuggestedWords,
+                UseSuggestions = useSuggestions,
+                MinSuggestionOccurrences = minSuggestionOccurrences,
                 OcrConfidence = (float)Math.Round(averageConfidence, 2),
                 Quality = quality,
                 OutputPdf = rebuiltPdf,
                 TimeElapsed = stopwatch.Elapsed.ToString(@"hh\:mm\:ss")
             };
 
-            return Ok(new
-            {
-                response.DocumentId,
-                response.PageNumber,
-                response.WordCount,
-                response.CorrectedWords,
-                AutoSuggestedWords = autoSuggestedWords,
-                UseSuggestions = useSuggestions,
-                MinSuggestionOccurrences = minSuggestionOccurrences,
-                response.OcrConfidence,
-                response.Quality,
-                response.OutputPdf,
-                response.TimeElapsed
-            });
+            return Ok(response);
         }
 
         [HttpGet("doctr-page")]
@@ -540,12 +530,15 @@ namespace Ocr.Api.Controllers
         }
 
         [HttpPost("doctr-rebuild-document")]
-        public async Task<IActionResult> RebuildDocTrDocument(string documentId)
+        public async Task<IActionResult> RebuildDocTrDocument(string documentId, bool useSuggestions = false, int minSuggestionOccurrences = 3)
         {
             var stopwatch = Stopwatch.StartNew();
 
             if (string.IsNullOrWhiteSpace(documentId))
                 return BadRequest("documentId is required.");
+
+            if (minSuggestionOccurrences <= 0)
+                minSuggestionOccurrences = 3;
 
             string rootDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -557,46 +550,66 @@ namespace Ocr.Api.Controllers
 
             Directory.CreateDirectory(rootDir);
 
-            string documentOutputDir = Path.Combine(rootDir, documentId);
+            string outputFolderName = useSuggestions
+                ? $"{documentId}_suggested"
+                : documentId;
+
+            string documentOutputDir = Path.Combine(rootDir, outputFolderName);
             Directory.CreateDirectory(documentOutputDir);
 
             var rebuiltPagePdfPaths = new List<string>();
             var confidenceScores = new List<float>();
-            int pageNumber = 1;
+            int totalWords = 0;
+            int correctedWords = 0;
+            int autoSuggestedWords = 0;
 
-            while (true)
+            var pageNumbers = await _docTrPersistenceService.GetPageNumbersAsync(documentId);
+            if (pageNumbers.Count == 0)
+                return NotFound("No persisted pages found for the specified document.");
+
+            foreach (var pageNumber in pageNumbers)
             {
                 var page = await _docTrPersistenceService.GetPageAsync(documentId, pageNumber);
                 if (page == null)
-                    break;
+                    continue;
 
                 var words = await _docTrPersistenceService.GetWordsAsync(documentId, pageNumber);
                 if (words.Count == 0)
-                {
-                    pageNumber++;
                     continue;
-                }
 
                 if (string.IsNullOrWhiteSpace(page.SourceImagePath) || !System.IO.File.Exists(page.SourceImagePath))
                     return NotFound($"Source image not found for page {pageNumber}.");
 
-                var wordsForPdf = words
-                    .OrderBy(w => w.WordOrder)
-                    .Select(w => new Ocr.Api.Models.DocTrWordResult
+                var wordsForPdf = new List<Ocr.Api.Models.DocTrWordResult>();
+
+                foreach (var w in words.OrderBy(w => w.WordOrder))
+                {
+                    string textToUse = await GetSuggestedTextOrFallbackAsync(w, useSuggestions, minSuggestionOccurrences);
+
+                    if (string.IsNullOrWhiteSpace(w.CorrectedText) &&
+                        !string.Equals(textToUse, w.RawText, StringComparison.Ordinal) &&
+                        string.Equals(w.TokenType, "Word", StringComparison.OrdinalIgnoreCase))
                     {
-                        Text = w.FinalText,
+                        autoSuggestedWords++;
+                    }
+
+                    wordsForPdf.Add(new Ocr.Api.Models.DocTrWordResult
+                    {
+                        Text = textToUse,
                         Confidence = w.Confidence,
                         XMin = w.XMin,
                         YMin = w.YMin,
                         XMax = w.XMax,
                         YMax = w.YMax
-                    })
-                    .ToList();
+                    });
+                }
+
+                string pagePdfSuffix = useSuggestions ? "_rebuilt_suggested" : "_rebuilt";
 
                 string pagePdfPath = Path.Combine(
                     documentOutputDir,
-                    $"{documentId}_page_{pageNumber:000}_rebuilt.pdf"
-                );  
+                    $"{documentId}_page_{pageNumber:000}{pagePdfSuffix}.pdf"
+                );
 
                 var rebuiltPagePdf = await _searchablePdfBuilderService.BuildPagePdfAsync(
                     page.SourceImagePath,
@@ -612,7 +625,8 @@ namespace Ocr.Api.Controllers
 
                 confidenceScores.Add(pageConfidence);
 
-                pageNumber++;
+                totalWords += words.Count;
+                correctedWords += words.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText));
             }
 
             if (rebuiltPagePdfPaths.Count == 0)
@@ -621,25 +635,19 @@ namespace Ocr.Api.Controllers
             int totalPages = rebuiltPagePdfPaths.Count;
             int chunkSize = _config.GetValue<int?>("Ocr:MergeChunkSize") ?? 25;
 
+            string mergedBaseName = useSuggestions
+                ? $"{documentId}_rebuilt_suggested"
+                : $"{documentId}_rebuilt";
+
             string mergedPdf = totalPages > chunkSize
-                ? await _pdfMergeService.MergeInChunksAsync(rebuiltPagePdfPaths, documentOutputDir, $"{documentId}_rebuilt", chunkSize)
-                : await _pdfMergeService.MergeAsync(rebuiltPagePdfPaths, documentOutputDir, $"{documentId}_rebuilt");
+                ? await _pdfMergeService.MergeInChunksAsync(rebuiltPagePdfPaths, documentOutputDir, mergedBaseName, chunkSize)
+                : await _pdfMergeService.MergeAsync(rebuiltPagePdfPaths, documentOutputDir, mergedBaseName);
 
             float overallConfidence = confidenceScores.Count > 0
                 ? confidenceScores.Average()
                 : 0f;
 
             string quality = GetQualityLabel(overallConfidence);
-
-            int correctedWords = 0;
-            int totalWords = 0;
-
-            for (int i = 1; i <= totalPages; i++)
-            {
-                var pageWords = await _docTrPersistenceService.GetWordsAsync(documentId, i);
-                totalWords += pageWords.Count;
-                correctedWords += pageWords.Count(w => !string.IsNullOrWhiteSpace(w.CorrectedText));
-            }
 
             stopwatch.Stop();
 
@@ -649,6 +657,9 @@ namespace Ocr.Api.Controllers
                 Pages = totalPages,
                 WordCount = totalWords,
                 CorrectedWords = correctedWords,
+                AutoSuggestedWords = autoSuggestedWords,
+                UseSuggestions = useSuggestions,
+                MinSuggestionOccurrences = minSuggestionOccurrences,
                 OcrConfidence = (float)Math.Round(overallConfidence, 2),
                 Quality = quality,
                 OutputPdf = mergedPdf,
